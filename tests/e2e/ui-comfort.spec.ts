@@ -25,7 +25,9 @@ test("settings errors are brought into view instead of hidden behind the dialog"
   await expect(alert).toBeFocused();
   await expect(page.locator("#main-content").getByRole("alert")).toHaveCount(0);
   await dialog.getByRole("button", { name: "Close dialog" }).click();
-  await expect(page.locator("#main-content").getByRole("alert")).toHaveText("Google sign-in is unavailable.");
+  await expect(page.locator("#main-content").getByRole("alert")).toHaveCount(0);
+  await page.getByRole("button", { name: testInfo.project.name === "mobile" ? "Settings" : "Settings & storage", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
 });
 
 for (const mode of ["standalone", "ios", "appinstalled"]) {

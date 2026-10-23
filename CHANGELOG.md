@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.2] - 2026-10-23
+
+### Fixed
+
+- Clear settings errors when closing the dialog so they do not reappear on the page or when reopening settings.
+
 ## [1.1.1] - 2026-10-23
 
 ### Fixed
