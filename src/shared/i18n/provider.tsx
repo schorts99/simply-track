@@ -1,13 +1,23 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { detectLanguage, isLanguage, LANGUAGE_STORAGE_KEY, type Language } from "./language";
 import { translate, type TranslationValues } from "./messages";
+
+// Server-rendered in English so crawlers and visitors without JavaScript can read them.
+const PUBLIC_PAGES = new Set(["/privacy", "/terms"]);
+const PAGE_META: Record<string, { title: string; description: string }> = {
+  "/": { title: "SimplyTrack | A little more clarity", description: "A private, local-first space to track your money, plan your spending, and save for what matters." },
+  "/privacy": { title: "Privacy Policy | SimplyTrack", description: "How SimplyTrack stores, encrypts and syncs your financial information." },
+  "/terms": { title: "Terms and Conditions | SimplyTrack", description: "The terms for using SimplyTrack, its estimates and optional services." },
+};
 
 interface I18n {
   language: Language;
   setLanguage: (language: Language) => void;
   t: (message: string, values?: TranslationValues) => string;
+  ready: boolean;
 }
 const Context = createContext<I18n | null>(null);
 const subscribeHydration = () => () => {};
@@ -35,11 +45,23 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
+  const pathname = usePathname();
   useEffect(() => {
     document.documentElement.lang = language;
-    document.title = translate(language, "SimplyTrack | A little more clarity");
-    document.querySelector('meta[name="description"]')?.setAttribute("content", translate(language, "A private, local-first space to track your money, plan your spending, and save for what matters."));
-  }, [language]);
+    const page = PAGE_META[pathname] ?? PAGE_META["/"];
+    const title = translate(language, page.title);
+    const description = translate(language, page.description);
+    const apply = () => {
+      if (document.title !== title) document.title = title;
+      const meta = document.querySelector('meta[name="description"]');
+      if (meta && meta.getAttribute("content") !== description) meta.setAttribute("content", description);
+    };
+    apply();
+    // Next can re-commit server metadata after hydration; keep the selected language applied.
+    const observer = new MutationObserver(apply);
+    observer.observe(document.head, { subtree: true, childList: true, characterData: true, attributes: true });
+    return () => observer.disconnect();
+  }, [language, pathname]);
   function setLanguage(value: Language) {
     let storageError = false;
     try { localStorage.setItem(LANGUAGE_STORAGE_KEY, value); }
@@ -47,7 +69,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     setPreference({ language: value, storageError });
   }
   const t = (message: string, values?: TranslationValues) => translate(language, message, values);
-  return <Context.Provider value={{ language, setLanguage, t }}>
+  if (!ready && PUBLIC_PAGES.has(pathname)) {
+    return <Context.Provider value={{ language: "en", setLanguage, t: (message, values) => translate("en", message, values), ready }}>{children}</Context.Provider>;
+  }
+  return <Context.Provider value={{ language, setLanguage, t, ready }}>
     {ready ? <><a className="skip-link" href="#main-content">{t("Skip to content")}</a>
       {storageError && <p className="alert error-alert language-error" role="alert">{t("Language preferences could not be saved or read. Your choice applies only to this session.")}</p>}
       {children}</> : <main className="unlock-page"><p>SimplyTrack</p></main>}

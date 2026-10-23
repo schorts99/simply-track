@@ -15,8 +15,8 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET" || url.origin !== self.location.origin) return;
   if (event.request.mode === "navigate") {
     event.respondWith(fetch(event.request).catch(async () => {
-      const shell = await caches.match("/");
-      return shell || Response.error();
+      const page = ASSETS.includes(url.pathname) ? await caches.match(url.pathname) : undefined;
+      return page || await caches.match("/") || Response.error();
     }));
     return;
   }

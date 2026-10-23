@@ -12,6 +12,7 @@ import { GoogleDriveSync } from "../../vault/infrastructure/google-drive";
 import { FinanceForm, type Editor } from "./finance-forms";
 import { ForecastView, newQuickTransaction, Overview, PlanningView, ScenariosView, TransactionView, type Tab } from "./finance-views";
 import { BrandMark, Modal } from "../../../shared/presentation/primitives";
+import { LegalLinks } from "../../legal/presentation/legal-page";
 
 interface InstallPrompt extends Event {
   prompt(): Promise<void>;
@@ -195,7 +196,7 @@ export default function FinanceApp() {
         </form>}
         {!loading && !bootFailed && <div className="unlock-alternatives"><button className="text-button" disabled={busy} onClick={() => importInput.current?.click()}><Upload size={15} />{t("Import a vault")}</button><button className="text-button" disabled={busy || !online} onClick={() => void perform(connectDrive)}><Cloud size={16} />{t("Open from Drive")}</button></div>}
         <p className="privacy-note"><LockKeyhole size={13} /> {t("Encrypted on your device. No finance server. No ads.")}</p>
-      </section><p className="unlock-footer">{t("A little clarity, every day.")}</p></main> : <div className="app-shell" aria-busy={busy}>
+      </section><p className="unlock-footer">{t("A little clarity, every day.")}</p><LegalLinks /></main> : <div className="app-shell" aria-busy={busy}>
       <aside className="sidebar"><button className="brand" onClick={() => navigate("overview")}><span className="brand-icon"><BrandMark /></span><span>simply<span className="brand-light">track</span><small>{t("A LITTLE MORE CLARITY")}</small></span></button>
         <span className="nav-label">{t("YOUR WORKSPACE")}</span>{nav()}
         <div className="sidebar-bottom"><div className="privacy-card"><ShieldCheck size={20} /><strong>{t("Just yours.")}</strong><p>{t("Your data stays encrypted.")}<br />{t("Your peace of mind stays intact.")}</p></div><button className="sidebar-action" onClick={() => setSettings(true)}><Settings2 size={18} /> {t("Settings & storage")}</button><button className="sidebar-action" disabled={busy} onClick={() => void perform(async () => { drive.disconnect(); setDriveConnected(false); await vault.logout(); setState(null); setSettings(false); })}><LogOut size={18} /> {t("Lock & log out")}</button><span className="sidebar-version">{t("SimplyTrack · Made for the everyday")}</span></div>
@@ -211,7 +212,7 @@ export default function FinanceApp() {
             {tab === "forecast" && <ForecastView {...viewProps} />}
             {tab === "scenarios" && <ScenariosView {...viewProps} />}
           </>}</div>
-          <footer className="page-footer"><span>{t("Built around your life. Not the other way around.")}</span><span><ShieldCheck size={13} /> {t("Local-first. Always yours.")}</span></footer>
+          <footer className="page-footer"><span>{t("Built around your life. Not the other way around.")}</span><span><ShieldCheck size={13} /> {t("Local-first. Always yours.")}</span><LegalLinks /></footer>
         </main>{nav(true)}
       </div>
     </div>}

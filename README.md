@@ -56,6 +56,10 @@ Translations and interpolation live in `src/shared/i18n/`, with no dependency on
 
 New vaults start empty. Amounts use integer hundredths, with at most two decimal input places, including currencies conventionally displayed without fractional units. Changing currency relabels amounts; it does not convert them. Savings-goal allocations are informational and do not move money. Monthly recurring flags inform forecasts, not automatic transaction creation. Forecast assumptions are shown in the app; recurring records are summed, not deduplicated into subscriptions.
 
+## Privacy and terms
+
+`/privacy` and `/terms` are bilingual, responsive, available offline, and linked from the unlock screen and app footer. They describe the app's actual storage, biometric, Google Drive, and hosting behavior. Set `NEXT_PUBLIC_LEGAL_OPERATOR`, `NEXT_PUBLIC_LEGAL_CONTACT`, and `NEXT_PUBLIC_LEGAL_JURISDICTION` before deploying, and have the text reviewed for your jurisdiction. Update `LEGAL_EFFECTIVE_DATE` in `src/modules/legal/presentation/legal-content.ts` when the content changes.
+
 ## Architecture
 
 Source code uses **domain-first vertical slices**, with layers inside each module rather than global layer folders:

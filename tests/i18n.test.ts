@@ -40,7 +40,7 @@ describe("translation catalog", () => {
   });
   it("covers static UI messages, labels, categories, payment methods and owned errors", () => {
     const messages = new Set<string>([...expenseCategories, ...incomeCategories, "Card", "Cash", "Bank transfer", "Digital wallet"]);
-    for (const folder of ["src/modules/finance/presentation", "src/shared/presentation", "src/shared/i18n", "src/shared/theme"]) {
+    for (const folder of ["src/modules/finance/presentation", "src/modules/legal/presentation", "src/shared/presentation", "src/shared/i18n", "src/shared/theme"]) {
       for (const file of readdirSync(folder).filter((file) => file.endsWith(".tsx"))) {
       const source = ts.createSourceFile(file, readFileSync(`${folder}/${file}`, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
       const walk = (node: ts.Node) => {
