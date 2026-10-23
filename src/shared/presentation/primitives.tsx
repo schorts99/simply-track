@@ -9,7 +9,7 @@ import { X } from "lucide-react";
 import Image from "next/image";
 
 export function BrandMark() {
-  return <Image src="/icon.svg" width={28} height={28} alt="" unoptimized aria-hidden="true" />;
+  return <Image src="/icon.svg" width={39} height={39} alt="" unoptimized aria-hidden="true" draggable="false" />;
 }
 
 export function formatMoney(cents: number, currency: string, language: Language = "en") {
