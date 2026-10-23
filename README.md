@@ -4,6 +4,10 @@ The minimalist cat identity lives in `public/logo.svg` (square) and `public/icon
 
 A responsive, local-first personal finance PWA built with Next.js and React. The adjacent `../ui` project is a visual/product reference; this directory is the implementation.
 
+## UI design credit
+
+The UI was designed and implemented entirely by AI—because I'm an awful designer. Any good-looking pixels are its doing.
+
 ## Run
 
 Requires Node.js 20.9+ and pnpm.
