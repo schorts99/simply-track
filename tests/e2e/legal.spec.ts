@@ -15,15 +15,24 @@ test("legal pages are linked, localized and readable on mobile", async ({ page }
   await expect(page).toHaveURL(/\/privacy$/);
   await expect(page.getByRole("heading", { level: 1, name: "Privacy Policy" })).toBeVisible();
   await expect(page.getByText("SimplyTrack never receives biometric data.", { exact: false })).toBeVisible();
+  await expect(page.getByText("previous copies are retained as internal backups, not independent per-device vaults.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Without synchronization, or if cleanup fails, those copies may remain longer.", { exact: false })).toBeVisible();
   await expect(page).toHaveTitle("Privacy Policy | SimplyTrack");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   await page.getByRole("main").getByLabel(/Language/).selectOption("es");
   await expect(page.getByRole("heading", { level: 1, name: "Política de privacidad" })).toBeVisible();
   await expect(page).toHaveTitle("Política de privacidad | SimplyTrack");
+  await expect(page.getByText("no como bóvedas independientes por dispositivo.", { exact: false })).toBeVisible();
   await page.getByRole("navigation", { name: "Legal" }).getByRole("link", { name: "Términos" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Términos y condiciones" })).toBeVisible();
   await expect(page).toHaveTitle("Términos y condiciones | SimplyTrack");
+  await expect(page.getByRole("heading", { name: "Sincronización y copias de seguridad", exact: true })).toBeVisible();
+  await expect(page.getByText("los registros no se combinan automáticamente.", { exact: false })).toBeVisible();
+  await page.getByRole("main").getByLabel(/Idioma/).selectOption("en");
+  await expect(page.getByRole("heading", { name: "Synchronization and backups", exact: true })).toBeVisible();
+  await expect(page.getByText("Keep independent exported backups.", { exact: false })).toBeVisible();
+  await page.getByRole("main").getByLabel(/Language/).selectOption("es");
   await page.getByRole("link", { name: "Volver a SimplyTrack" }).click();
   await expect(page).toHaveURL(/\/$/);
 });
