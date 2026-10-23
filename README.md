@@ -124,7 +124,7 @@ Restoring Drive validates the password and SQLite data, then adopts the current 
 
 `pnpm build` generates `public/sw.js` from the production build's exact JavaScript/CSS/font assets and caches the shell, icons and SQLite WASM. Only same-origin app assets are cached, never vault plaintext or Google responses. Offline support is registered in production only. Open the app online once and let service-worker installation finish before going offline. Updates activate once existing app tabs are closed; this prevents replacing runtime assets under an open vault.
 
-Use the browser's Install app action, or **Share > Add to Home Screen** on iOS. Production needs HTTPS; localhost is allowed for development. Web Locks, IndexedDB, Web Crypto and WebAssembly are required. OPFS, install prompts, persistent-storage grants and WebAuthn PRF are capability-dependent enhancements. Deploy at the origin root (asset and worker paths assume `/`).
+Use the browser's Install app action, or **Share > Add to Home Screen** on iOS. The settings install section is hidden when running in an installed display mode (including iOS standalone) or after the browser reports installation. Production needs HTTPS; localhost is allowed for development. Web Locks, IndexedDB, Web Crypto and WebAssembly are required. OPFS, install prompts, persistent-storage grants and WebAuthn PRF are capability-dependent enhancements. Deploy at the origin root (asset and worker paths assume `/`).
 
 ## Checks
 

@@ -61,6 +61,7 @@ export default function FinanceApp() {
   const [importBytes, setImportBytes] = useState<Uint8Array | null>(null);
   const [deletion, setDeletion] = useState<{ kind: "transaction" | "budget" | "goal" | "scenario"; id: string } | null>(null);
   const [install, setInstall] = useState<InstallPrompt | null>(null);
+  const [installed, setInstalled] = useState(false);
   const [storage, setStorage] = useState("");
   const operation = useRef(false);
   const driveSession = useRef(0);
@@ -87,11 +88,9 @@ export default function FinanceApp() {
     };
     connectivity();
     const prompt = (event: Event) => { event.preventDefault(); setInstall(event as InstallPrompt); };
-    const installed = () => setInstall(null);
     window.addEventListener("online", connectivity);
     window.addEventListener("offline", connectivity);
     window.addEventListener("beforeinstallprompt", prompt);
-    window.addEventListener("appinstalled", installed);
     if (process.env.NODE_ENV === "production" && "serviceWorker" in navigator) {
       void navigator.serviceWorker.register("/sw.js").catch((error) => setError(`Offline support could not be enabled: ${message(error)}`));
     }
@@ -100,9 +99,20 @@ export default function FinanceApp() {
       window.removeEventListener("online", connectivity);
       window.removeEventListener("offline", connectivity);
       window.removeEventListener("beforeinstallprompt", prompt);
-      window.removeEventListener("appinstalled", installed);
     };
   }, [vault]);
+  useEffect(() => {
+    const displayMode = window.matchMedia("(display-mode: standalone), (display-mode: minimal-ui), (display-mode: fullscreen)");
+    const update = () => setInstalled(displayMode.matches || ("standalone" in navigator && navigator.standalone === true));
+    const onInstalled = () => { setInstalled(true); setInstall(null); };
+    update();
+    displayMode.addEventListener("change", update);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => {
+      displayMode.removeEventListener("change", update);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
+  }, []);
   useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(""), 4000);
@@ -256,7 +266,7 @@ export default function FinanceApp() {
     } else setNotice("Use your browser's Install app menu, or Share > Add to Home Screen on iPhone and iPad.");
   }
 
-  const errorBanner = error && <div className="alert error-alert" role="alert"><span>{translateError(language, error)}</span><button aria-label={t("Dismiss error")} className="icon-button" onClick={() => setError("")}><X size={17} /></button></div>;
+  const errorBanner = error && !settings && !editor && !deletion && !importBytes && !conflict && <div className="alert error-alert" role="alert"><span>{translateError(language, error)}</span><button aria-label={t("Dismiss error")} className="icon-button" onClick={() => setError("")}><X size={17} /></button></div>;
   const nav = (mobile = false) => <nav aria-label={mobile ? t("Mobile navigation") : t("Main navigation")} className={mobile ? "bottom-nav" : "main-nav"}>{tabs.map(({ id, label, short, Icon }) => <button key={id} aria-current={tab === id ? "page" : undefined} className={tab === id ? "active" : ""} onClick={() => navigate(id)}><Icon size={19} /><span>{t(mobile ? short : label)}</span>{!mobile && tab === id && <i />}</button>)}</nav>;
   const currentTabLabel = t(tabs.find((item) => item.id === tab)!.label);
   const editorTitles = {
@@ -308,14 +318,14 @@ export default function FinanceApp() {
       </div>
     </div>}
     {notice && <div className="toast"><span role="status"><Check size={17} />{t(notice)}</span><button type="button" className="icon-button" aria-label={t("Dismiss notification")} onClick={() => setNotice("")}><X size={16} /></button></div>}
-    {editor && state && <Modal title={t(editor.kind === "preferences" ? "Your preferences" : editorTitles[editor.kind][editor.data ? "edit" : "new"])} onClose={() => setEditor(null)}><FinanceForm editor={editor} settings={state.settings} month={month} busy={busy} onSave={save} /></Modal>}
+    {editor && state && <Modal title={t(editor.kind === "preferences" ? "Your preferences" : editorTitles[editor.kind][editor.data ? "edit" : "new"])} error={error} onClose={() => setEditor(null)}><FinanceForm editor={editor} settings={state.settings} month={month} busy={busy} onSave={save} /></Modal>}
     {deletion && <Modal title={t("Remove this record?")} error={error} onClose={() => setDeletion(null)}><p>{t("This permanently removes the record from your vault. Other records won't be changed.")}</p><div className="dialog-actions"><button className="button secondary" onClick={() => setDeletion(null)}>{t("Keep it")}</button><button className="button danger" disabled={busy} onClick={() => void perform(async () => { await vault.execute({ type: `${deletion.kind}.delete`, id: deletion.id }); setDeletion(null); }, "Record removed")}>{t("Remove record")}</button></div></Modal>}
     {settings && state && <Modal title={t("Your space, your settings")} error={error} onClose={() => setSettings(false)}>
       <div className="settings-stack"><section className="display-preferences"><LanguageSelect /><ThemeSelect /></section><section><h3>{state.settings.profileName || t("Preferences")}</h3>{state.settings.workspaceName && <p>{state.settings.workspaceName}</p>}<p>{t("Customize your profile, categories, payment methods, quick actions and forecast assumptions.")}</p><button className="button secondary" onClick={() => { setSettings(false); setEditor({ kind: "preferences", data: state.settings }); }}><Settings2 size={16} />{t("Edit preferences")}</button></section>
         <section><h3><LockKeyhole size={17} /> {t("Encrypted device vault")}</h3><p>{t("Your data is encrypted on this device. Export a backup before clearing browser data.")}</p><details className="settings-details"><summary>{t("Storage & security details")}</summary><p>{t("SQLite, encrypted with AES-256-GCM. Stored")} {storage === "opfs" ? t("as simply-track.vault in this browser's private device filesystem") : t("in this browser's device storage (IndexedDB fallback)")}{t(". Clearing site data removes it. Keep a backup.")}</p><p className="help">{t("This tab stays unlocked across reloads until you log out. A non-extractable encryption key is kept in browser storage for that session. Anyone with access to this unlocked browser session can view your data.")}</p></details><div className="wrap-actions"><button className="button secondary" disabled={busy} onClick={() => void perform(async () => downloadVault(await vault.export()), "Encrypted backup downloaded")}><Download size={16} />{t("Export backup")}</button><button className="button secondary" disabled={busy} onClick={() => importInput.current?.click()}><Upload size={16} />{t("Import backup")}</button></div></section>
         <section><h3><Cloud size={17} /> {t("Google Drive")}</h3><p>{t("Keep an encrypted copy in Google Drive to use the same vault on other devices.")}</p><details className="settings-details"><summary>{t("How sync works")}</summary><p>{t("Sync only the encrypted vault to your Google account's private app-data folder. Use the same Google account and vault password on each device. Sync reconnects after unlocking if previously enabled. Google may require a click to authorize again; access tokens are not saved.")}</p><p className="help">{t(syncStatus)}{t(". When connected, saved edits sync automatically while online. Conflicting copies always need your review.")}</p></details><div className="wrap-actions">{driveConnected ? <><button className="button secondary" disabled={busy || syncing || !online} onClick={() => void syncNow()}>{t("Sync now")}</button><button className="button secondary" disabled={busy} onClick={() => void perform(disableDrive)}>{t("Disconnect")}</button></> : <button className="button secondary" disabled={busy || syncing || !online} onClick={() => void perform(connectDrive)}><Cloud size={16} />{t("Connect Google Drive")}</button>}<button className="text-button" disabled={busy} onClick={() => void perform(async () => { disconnectDrive(); await drive.forgetLink(); setSyncStatus("Stored on this device"); }, "Sync link cleared; Drive file is unchanged")}>{t("Clear sync link")}</button></div></section>
         <section><h3><Fingerprint size={17} /> {t("Device unlock")}</h3><p>{t("Optional platform authentication using WebAuthn PRF. Your device may use biometrics or its PIN. Availability depends on your browser and authenticator; password unlock always works.")}</p>{biometric ? <button className="button secondary" disabled={busy} onClick={() => void perform(async () => { await vault.biometrics.disable(); setBiometric(false); }, "Device unlock disabled")}>{t("Disable device unlock")}</button> : canBiometric ? <form className="stack" onSubmit={(event) => { event.preventDefault(); const form = event.currentTarget; const password = String(new FormData(form).get("password")); void perform(async () => { await vault.enrollBiometrics(password); setBiometric(true); form.reset(); }, "Device unlock enabled"); }}><label>{t("Confirm your vault password")}<input name="password" type="password" required autoComplete="current-password" /></label><button className="button secondary" disabled={busy}><Fingerprint size={16} />{t("Enable device unlock")}</button></form> : <p className="help">{t("No compatible platform authenticator was detected on this device.")}</p>}</section>
-        <section><h3>{t("Take SimplyTrack with you")}</h3><p>{t("Install it for a focused, offline-ready workspace. On iOS, use Share > Add to Home Screen.")}</p><button className="button secondary" onClick={() => void perform(installApp)}><Download size={16} />{t("Install app")}</button></section>
+        {!installed && <section><h3>{t("Take SimplyTrack with you")}</h3><p>{t("Install it for a focused, offline-ready workspace. On iOS, use Share > Add to Home Screen.")}</p><button className="button secondary" onClick={() => void perform(installApp)}><Download size={16} />{t("Install app")}</button></section>}
         <button className="button secondary" disabled={busy} onClick={() => void perform(async () => { disconnectDrive(); await vault.logout(); setState(null); setSettings(false); }, "Vault locked")}><LogOut size={16} />{t("Lock vault & log out")}</button>
       </div>
     </Modal>}

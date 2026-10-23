@@ -8,6 +8,67 @@ async function createVault(page: Page) {
   await expect(page.getByRole("heading", { name: "A little clarity. A lot of possibility." })).toBeVisible();
 }
 
+test("settings errors are brought into view instead of hidden behind the dialog", async ({ page }, testInfo) => {
+  await createVault(page);
+  await page.evaluate(() => {
+    window.dispatchEvent(Object.assign(new Event("beforeinstallprompt"), {
+      prompt: async () => { throw new Error("Google sign-in is unavailable."); },
+      userChoice: Promise.resolve({ outcome: "dismissed" }),
+    }));
+  });
+  await page.getByRole("button", { name: testInfo.project.name === "mobile" ? "Settings" : "Settings & storage", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Install app", exact: true }).click();
+  const alert = dialog.getByRole("alert");
+  await expect(alert).toHaveText("Google sign-in is unavailable.");
+  await expect(alert).toBeInViewport();
+  await expect(alert).toBeFocused();
+  await expect(page.locator("#main-content").getByRole("alert")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Close dialog" }).click();
+  await expect(page.locator("#main-content").getByRole("alert")).toHaveText("Google sign-in is unavailable.");
+});
+
+for (const mode of ["standalone", "ios", "appinstalled"]) {
+  test(`hides installation controls in installed mode: ${mode}`, async ({ page }, testInfo) => {
+    await page.addInitScript((mode) => {
+      if (mode === "ios") Object.defineProperty(navigator, "standalone", { value: true });
+      if (mode === "standalone") {
+        const matchMedia = window.matchMedia.bind(window);
+        window.matchMedia = (query) => {
+          const result = matchMedia(query);
+          if (query.includes("display-mode: standalone")) Object.defineProperty(result, "matches", { value: true });
+          return result;
+        };
+      }
+    }, mode);
+    await createVault(page);
+    await page.getByRole("button", { name: testInfo.project.name === "mobile" ? "Settings" : "Settings & storage", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    if (mode === "appinstalled") {
+      await expect(dialog.getByRole("button", { name: "Install app", exact: true })).toBeVisible();
+      await page.evaluate(() => window.dispatchEvent(new Event("appinstalled")));
+    }
+    await expect(dialog.getByRole("button", { name: "Install app", exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole("heading", { name: "Take SimplyTrack with you", exact: true })).toHaveCount(0);
+  });
+}
+
+test("language persistence failures are visible inside settings", async ({ page }, testInfo) => {
+  await createVault(page);
+  await page.evaluate(() => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key === "simply-track-language") throw new DOMException("Blocked", "SecurityError");
+      return setItem.call(this, key, value);
+    };
+  });
+  await page.getByRole("button", { name: testInfo.project.name === "mobile" ? "Settings" : "Settings & storage", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("combobox", { name: "Language", exact: true }).selectOption("en");
+  await expect(dialog.getByRole("alert")).toContainText("Language preferences could not be saved or read.");
+  await expect(dialog.getByRole("alert")).toBeInViewport();
+});
+
 test("filters offer a useful recovery and historical months have a quick return", async ({ page }, testInfo) => {
   await createVault(page);
   await page.getByRole("button", { name: "Coffee $5.25", exact: true }).click();

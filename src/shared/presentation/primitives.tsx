@@ -19,6 +19,7 @@ export function amountInput(cents: number) { return (cents / 100).toFixed(2); }
 export function Modal({ title, children, onClose, error }: { title: string; children: ReactNode; onClose: () => void; error?: string }) {
   const { t, language } = useI18n();
   const ref = useRef<HTMLDialogElement>(null);
+  const errorRef = useRef<HTMLParagraphElement>(null);
   const headingId = useId();
   useEffect(() => {
     const dialog = ref.current;
@@ -30,6 +31,11 @@ export function Modal({ title, children, onClose, error }: { title: string; chil
       target?.focus({ preventScroll: true });
     };
   }, []);
+  useEffect(() => {
+    if (!error) return;
+    errorRef.current?.focus({ preventScroll: true });
+    errorRef.current?.scrollIntoView({ block: "center" });
+  }, [error]);
   return <dialog ref={ref} className="modal" aria-labelledby={headingId} onCancel={onClose} onClose={(event) => {
     // Strict Mode can dispatch a queued cleanup close after showModal reopens it.
     if (!event.currentTarget.open) onClose();
@@ -40,7 +46,7 @@ export function Modal({ title, children, onClose, error }: { title: string; chil
   }}>
     <div className="modal-heading"><h2 id={headingId}>{title}</h2><button className="icon-button" type="button" aria-label={t("Close dialog")} onClick={onClose}><X size={20} /></button></div>
     <div className="modal-body">
-      {error && <p className="alert error-alert" role="alert">{translateError(language, error)}</p>}
+      {error && <p ref={errorRef} tabIndex={-1} className="alert error-alert" role="alert">{translateError(language, error)}</p>}
       {children}
     </div>
   </dialog>;

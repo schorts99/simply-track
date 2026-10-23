@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1] - 2026-10-23
+
+### Fixed
+
+- Bring dialog errors into view and focus them, rather than leaving errors hidden behind dialogs or outside the scrolled viewport.
+- Hide installation controls in installed app display modes, including iOS standalone, and after the browser reports installation.
+
 ## [1.1.0] - 2026-10-23
 
 ### Added

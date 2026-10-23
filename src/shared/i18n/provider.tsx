@@ -18,6 +18,7 @@ interface I18n {
   setLanguage: (language: Language) => void;
   t: (message: string, values?: TranslationValues) => string;
   ready: boolean;
+  storageError: boolean;
 }
 const Context = createContext<I18n | null>(null);
 const subscribeHydration = () => () => {};
@@ -70,11 +71,10 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }
   const t = (message: string, values?: TranslationValues) => translate(language, message, values);
   if (!ready && PUBLIC_PAGES.has(pathname)) {
-    return <Context.Provider value={{ language: "en", setLanguage, t: (message, values) => translate("en", message, values), ready }}>{children}</Context.Provider>;
+    return <Context.Provider value={{ language: "en", setLanguage, t: (message, values) => translate("en", message, values), ready, storageError: false }}>{children}</Context.Provider>;
   }
-  return <Context.Provider value={{ language, setLanguage, t, ready }}>
+  return <Context.Provider value={{ language, setLanguage, t, ready, storageError }}>
     {ready ? <><a className="skip-link" href="#main-content">{t("Skip to content")}</a>
-      {storageError && <p className="alert error-alert language-error" role="alert">{t("Language preferences could not be saved or read. Your choice applies only to this session.")}</p>}
       {children}</> : <main className="unlock-page"><p>SimplyTrack</p></main>}
   </Context.Provider>;
 }
@@ -86,11 +86,13 @@ export function useI18n() {
 }
 
 export function LanguageSelect() {
-  const { language, setLanguage, t } = useI18n();
-  return <label className="language-select">{t("Language")}
+  const { language, setLanguage, t, storageError } = useI18n();
+  return <div><label className="language-select">{t("Language")}
     <select value={language} onChange={(event) => { if (isLanguage(event.target.value)) setLanguage(event.target.value); }}>
       <option value="en" lang="en">English</option>
       <option value="es" lang="es">Español</option>
     </select>
-  </label>;
+  </label>
+    {storageError && <p className="alert error-alert language-error" role="alert">{t("Language preferences could not be saved or read. Your choice applies only to this session.")}</p>}
+  </div>;
 }
