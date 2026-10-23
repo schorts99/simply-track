@@ -57,6 +57,7 @@ export default function FinanceApp() {
   const [conflict, setConflict] = useState(false);
   const [autoSyncPaused, setAutoSyncPaused] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [reconnectNeeded, setReconnectNeeded] = useState(false);
   const [importBytes, setImportBytes] = useState<Uint8Array | null>(null);
   const [deletion, setDeletion] = useState<{ kind: "transaction" | "budget" | "goal" | "scenario"; id: string } | null>(null);
   const [install, setInstall] = useState<InstallPrompt | null>(null);
@@ -64,6 +65,7 @@ export default function FinanceApp() {
   const operation = useRef(false);
   const driveSession = useRef(0);
   const syncedRevision = useRef<string | undefined>(undefined);
+  const resumeAttempt = useRef<string | undefined>(undefined);
   const importInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -132,9 +134,35 @@ export default function FinanceApp() {
       setAutoSyncPaused(true);
       setError(message(error));
       setDriveConnected(drive.connected);
+      setReconnectNeeded(!drive.connected);
       if (vault.isOpen()) setState(await vault.read());
     } finally { setSyncing(false); }
   }, [drive, vault]);
+  useEffect(() => {
+    if (!state) { resumeAttempt.current = undefined; return; }
+    if (!online || busy || syncing || driveConnected || resumeAttempt.current === state.id) return;
+    resumeAttempt.current = state.id;
+    const session = driveSession.current;
+    const resume = async () => {
+      try {
+        if (!await drive.shouldResume(state.id) || session !== driveSession.current) return;
+        setSyncing(true);
+        setSyncStatus("Reconnecting Google Drive...");
+        await drive.connect(true);
+        if (session !== driveSession.current) return;
+        setDriveConnected(true);
+        setReconnectNeeded(false);
+        await syncNow();
+      } catch (error) {
+        if (session !== driveSession.current) return;
+        setDriveConnected(drive.connected);
+        setReconnectNeeded(true);
+        setSyncStatus("Drive needs reconnection; saved on device");
+        setError(message(error));
+      } finally { if (session === driveSession.current) setSyncing(false); }
+    };
+    void resume();
+  }, [state, online, busy, syncing, driveConnected, drive, syncNow]);
   useEffect(() => {
     if (!state || !driveConnected || !online || conflict || autoSyncPaused || busy || syncing || syncedRevision.current === state.revision) return;
     const timer = setTimeout(() => { void syncNow(); }, 1800);
@@ -154,19 +182,27 @@ export default function FinanceApp() {
     setEditor(null); setNotice("Saved to your encrypted vault");
   }
   async function connectDrive() {
+    resumeAttempt.current = state?.id;
     setAutoSyncPaused(false);
     syncedRevision.current = undefined;
     await drive.connect(); setDriveConnected(true);
+    setReconnectNeeded(false);
+    if (vault.isOpen()) await drive.rememberSync(true);
     setSettings(false);
     await syncNow();
   }
   function disconnectDrive() {
     driveSession.current++;
     drive.disconnect();
+    setReconnectNeeded(false);
     setDriveConnected(false);
     setAutoSyncPaused(false);
     syncedRevision.current = undefined;
     setSyncStatus("Stored on this device");
+  }
+  async function disableDrive() {
+    disconnectDrive();
+    await drive.rememberSync(false);
   }
   async function resolveDrive(password?: string) {
     try {
@@ -175,6 +211,7 @@ export default function FinanceApp() {
         await drive.useDrive(password);
       } else await drive.useDevice();
       syncedRevision.current = drive.syncedRevision;
+      await drive.rememberSync(true);
       setConflict(false);
       setAutoSyncPaused(false);
       setSyncStatus(drive.cleanupWarning ? "Vault synced; old Drive snapshots could not be cleaned up. Cleanup will retry on the next sync." : "Up to date with Google Drive");
@@ -257,6 +294,7 @@ export default function FinanceApp() {
       <div className="workspace"><header className="topbar"><span className="breadcrumb"><span className="workspace-name">{state.settings.workspaceName || t("Your workspace")}</span> <span>/</span> <strong>{currentTabLabel}</strong></span><button className="mobile-brand" onClick={() => navigate("overview")}><BrandMark /><span>{state.settings.workspaceName || "simplytrack"}</span></button><div className="topbar-actions"><span className={`storage-status ${online ? "" : "offline"}`}>{online ? <LockKeyhole size={13} /> : <WifiOff size={14} />}<span>{online ? t("Private & encrypted") : t("Offline · saved on device")}</span></span><button className="icon-button mobile-settings" aria-label={t("Settings")} onClick={() => setSettings(true)}><Settings2 size={20} /></button><button className="avatar" onClick={() => setSettings(true)} aria-label={t("Open your vault settings")} title={state.settings.profileName || t("Open your vault settings")}>{Array.from(state.settings.profileName.trim())[0]?.toLocaleUpperCase(language) || "Y"}</button></div></header>
         <main className="main-content" id="main-content" tabIndex={-1}><div className="page-heading"><div><span className="eyebrow">{new Date(`${month}-15T12:00:00`).toLocaleDateString(language, { month: "long", year: "numeric" })} &nbsp; / &nbsp; {tab === "overview" ? t("THE BIG PICTURE") : currentTabLabel.toLocaleUpperCase(language)}</span><h1>{t(headings[tab].title)}</h1><p>{t(headings[tab].subtitle)}</p></div><button className="button primary add-transaction" disabled={busy} onClick={() => setEditor({ kind: "transaction" })}><Plus size={17} />{t("Add transaction")}</button></div>
           {errorBanner}
+          {reconnectNeeded && <div className="alert" role="status"><span>{t("Automatic Drive reconnection needs your help. Your changes remain saved on this device.")}</span><button className="button secondary" disabled={busy || syncing || !online} onClick={() => void perform(connectDrive)}>{t("Reconnect Google Drive")}</button></div>}
           <div className="month-toolbar"><div className="month-controls"><div className="month-picker"><button className="icon-button" aria-label={t("Previous month")} onClick={() => changeMonth(-1)}><ChevronLeft size={16} /></button><label><span className="sr-only">{t("Selected month")}</span><input type="month" required value={month} onChange={(e) => { if (/^\d{4}-(0[1-9]|1[0-2])$/.test(e.target.value)) setMonth(e.target.value); }} /></label><button className="icon-button" aria-label={t("Next month")} onClick={() => changeMonth(1)}><ChevronRight size={16} /></button></div>{month !== localDate().slice(0, 7) && <button className="text-button current-month" onClick={() => setMonth(localDate().slice(0, 7))}>{t("This month")}</button>}</div><button className="text-button sync-label" onClick={() => setSettings(true)}><span className={`status-dot ${syncStatus.includes("paused") || conflict ? "amber" : ""}`} />{t(syncStatus)}</button></div>
           <div className="view-stack">{viewProps && <>
             {tab === "overview" && <Overview {...viewProps} navigate={navigate} quickAdd={(title, amount, category, paymentMethod) => void perform(async () => { await vault.execute({ type: "transaction.save", data: newQuickTransaction(title, amount, category, paymentMethod, localDate().startsWith(month) ? localDate() : `${month}-01`) }); }, "Transaction recorded")} />}
@@ -275,7 +313,7 @@ export default function FinanceApp() {
     {settings && state && <Modal title={t("Your space, your settings")} error={error} onClose={() => setSettings(false)}>
       <div className="settings-stack"><section className="display-preferences"><LanguageSelect /><ThemeSelect /></section><section><h3>{state.settings.profileName || t("Preferences")}</h3>{state.settings.workspaceName && <p>{state.settings.workspaceName}</p>}<p>{t("Customize your profile, categories, payment methods, quick actions and forecast assumptions.")}</p><button className="button secondary" onClick={() => { setSettings(false); setEditor({ kind: "preferences", data: state.settings }); }}><Settings2 size={16} />{t("Edit preferences")}</button></section>
         <section><h3><LockKeyhole size={17} /> {t("Encrypted device vault")}</h3><p>{t("Your data is encrypted on this device. Export a backup before clearing browser data.")}</p><details className="settings-details"><summary>{t("Storage & security details")}</summary><p>{t("SQLite, encrypted with AES-256-GCM. Stored")} {storage === "opfs" ? t("as simply-track.vault in this browser's private device filesystem") : t("in this browser's device storage (IndexedDB fallback)")}{t(". Clearing site data removes it. Keep a backup.")}</p><p className="help">{t("This tab stays unlocked across reloads until you log out. A non-extractable encryption key is kept in browser storage for that session. Anyone with access to this unlocked browser session can view your data.")}</p></details><div className="wrap-actions"><button className="button secondary" disabled={busy} onClick={() => void perform(async () => downloadVault(await vault.export()), "Encrypted backup downloaded")}><Download size={16} />{t("Export backup")}</button><button className="button secondary" disabled={busy} onClick={() => importInput.current?.click()}><Upload size={16} />{t("Import backup")}</button></div></section>
-        <section><h3><Cloud size={17} /> {t("Google Drive")}</h3><p>{t("Keep an encrypted copy in Google Drive to use the same vault on other devices.")}</p><details className="settings-details"><summary>{t("How sync works")}</summary><p>{t("Sync only the encrypted vault to your Google account's private app-data folder. Use the same Google account and vault password on each device. Reconnect after reload; Google access tokens are not saved.")}</p><p className="help">{t(syncStatus)}{t(". When connected, saved edits sync automatically while online. Conflicting copies always need your review.")}</p></details><div className="wrap-actions">{driveConnected ? <><button className="button secondary" disabled={busy || syncing || !online} onClick={() => void syncNow()}>{t("Sync now")}</button><button className="button secondary" disabled={busy} onClick={disconnectDrive}>{t("Disconnect")}</button></> : <button className="button secondary" disabled={busy || !online} onClick={() => void perform(connectDrive)}><Cloud size={16} />{t("Connect Google Drive")}</button>}<button className="text-button" disabled={busy} onClick={() => void perform(async () => { disconnectDrive(); await drive.forgetLink(); setSyncStatus("Stored on this device"); }, "Sync link cleared; Drive file is unchanged")}>{t("Clear sync link")}</button></div></section>
+        <section><h3><Cloud size={17} /> {t("Google Drive")}</h3><p>{t("Keep an encrypted copy in Google Drive to use the same vault on other devices.")}</p><details className="settings-details"><summary>{t("How sync works")}</summary><p>{t("Sync only the encrypted vault to your Google account's private app-data folder. Use the same Google account and vault password on each device. Sync reconnects after unlocking if previously enabled. Google may require a click to authorize again; access tokens are not saved.")}</p><p className="help">{t(syncStatus)}{t(". When connected, saved edits sync automatically while online. Conflicting copies always need your review.")}</p></details><div className="wrap-actions">{driveConnected ? <><button className="button secondary" disabled={busy || syncing || !online} onClick={() => void syncNow()}>{t("Sync now")}</button><button className="button secondary" disabled={busy} onClick={() => void perform(disableDrive)}>{t("Disconnect")}</button></> : <button className="button secondary" disabled={busy || syncing || !online} onClick={() => void perform(connectDrive)}><Cloud size={16} />{t("Connect Google Drive")}</button>}<button className="text-button" disabled={busy} onClick={() => void perform(async () => { disconnectDrive(); await drive.forgetLink(); setSyncStatus("Stored on this device"); }, "Sync link cleared; Drive file is unchanged")}>{t("Clear sync link")}</button></div></section>
         <section><h3><Fingerprint size={17} /> {t("Device unlock")}</h3><p>{t("Optional platform authentication using WebAuthn PRF. Your device may use biometrics or its PIN. Availability depends on your browser and authenticator; password unlock always works.")}</p>{biometric ? <button className="button secondary" disabled={busy} onClick={() => void perform(async () => { await vault.biometrics.disable(); setBiometric(false); }, "Device unlock disabled")}>{t("Disable device unlock")}</button> : canBiometric ? <form className="stack" onSubmit={(event) => { event.preventDefault(); const form = event.currentTarget; const password = String(new FormData(form).get("password")); void perform(async () => { await vault.enrollBiometrics(password); setBiometric(true); form.reset(); }, "Device unlock enabled"); }}><label>{t("Confirm your vault password")}<input name="password" type="password" required autoComplete="current-password" /></label><button className="button secondary" disabled={busy}><Fingerprint size={16} />{t("Enable device unlock")}</button></form> : <p className="help">{t("No compatible platform authenticator was detected on this device.")}</p>}</section>
         <section><h3>{t("Take SimplyTrack with you")}</h3><p>{t("Install it for a focused, offline-ready workspace. On iOS, use Share > Add to Home Screen.")}</p><button className="button secondary" onClick={() => void perform(installApp)}><Download size={16} />{t("Install app")}</button></section>
         <button className="button secondary" disabled={busy} onClick={() => void perform(async () => { disconnectDrive(); await vault.logout(); setState(null); setSettings(false); }, "Vault locked")}><LogOut size={16} />{t("Lock vault & log out")}</button>

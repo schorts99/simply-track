@@ -77,6 +77,62 @@ async function fixture() {
 }
 
 describe("one shared Drive vault", () => {
+  it("remembers enabled sync for this vault across sessions, but honors explicit disconnect", async () => {
+    const f = await fixture();
+    f.storage.clear();
+    expect(await f.drive.shouldResume("book")).toBe(false);
+    await f.drive.rememberSync(true);
+    f.drive.disconnect();
+    const next = new GoogleDriveSync(f.vault);
+    expect(await next.shouldResume("book")).toBe(true);
+    expect(await next.shouldResume("another-book")).toBe(false);
+    expect(f.storage.get("drive-preference")).toEqual({ bookId: "book", enabled: true });
+    await next.rememberSync(false);
+    expect(await next.shouldResume("book")).toBe(false);
+    await next.forgetLink();
+    expect(f.storage.get("drive-preference")).toBeUndefined();
+    expect(f.storage.get("drive-base")).toBeUndefined();
+  });
+
+  it("resumes existing installations from their baseline without overriding a disabled preference", async () => {
+    const f = await fixture();
+    expect(await f.drive.shouldResume("book")).toBe(true);
+    await f.drive.rememberSync(false);
+    expect(await f.drive.shouldResume("book")).toBe(false);
+  });
+
+  it("uses no-prompt authorization for automatic reconnect and ignores callbacks after cancellation", async () => {
+    const f = await fixture();
+    let callback!: (response: { access_token: string }) => void;
+    const requestAccessToken = vi.fn();
+    window.google!.accounts.oauth2.initTokenClient = vi.fn((config) => {
+      callback = config.callback;
+      return { requestAccessToken };
+    });
+    f.drive.disconnect();
+    const reconnect = f.drive.connect(true);
+    await vi.waitFor(() => expect(requestAccessToken).toHaveBeenCalledWith({ prompt: "none" }));
+    f.drive.disconnect();
+    await expect(reconnect).rejects.toThrow();
+    callback({ access_token: "late-token" });
+    expect(f.drive.connected).toBe(false);
+  });
+
+  it("surfaces blocked popups and allows a later manual reconnect", async () => {
+    const f = await fixture();
+    f.drive.disconnect();
+    window.google!.accounts.oauth2.initTokenClient = vi.fn((config) => ({
+      requestAccessToken: (options: { prompt: string }) => {
+        if (options.prompt === "none") config.error_callback({ type: "popup_failed_to_open" });
+        else config.callback({ access_token: "manual-token", expires_in: 3600 });
+      },
+    }));
+    await expect(f.drive.connect(true)).rejects.toThrow("popup_failed_to_open");
+    expect(f.drive.running).toBe(false);
+    await f.drive.connect();
+    expect(f.drive.connected).toBe(true);
+  });
+
   it("creates the initial encrypted copy and remembers its baseline", async () => {
     const f = await fixture();
     f.storage.clear(); f.setFiles([]);

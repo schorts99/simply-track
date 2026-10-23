@@ -6,8 +6,12 @@ test("Drive import stays connected, manual sync does not duplicate, and deletion
   test.setTimeout(60000);
   await page.route("https://accounts.google.com/gsi/client", (route) => route.fulfill({
     contentType: "text/javascript",
-    body: `window.google = { accounts: { oauth2: { initTokenClient: ({ callback }) => ({
-      requestAccessToken: () => callback({ access_token: "test-token", expires_in: 3600 })
+    body: `window.google = { accounts: { oauth2: { initTokenClient: ({ callback, error_callback }) => ({
+      requestAccessToken: ({ prompt }) => {
+        if (prompt === "none" && sessionStorage.getItem("test-block-google")) {
+          error_callback({ type: "popup_failed_to_open" });
+        } else callback({ access_token: "test-token", expires_in: 3600 });
+      }
     }) } } };`,
   }));
   await page.goto("/");
@@ -75,8 +79,6 @@ test("Drive import stays connected, manual sync does not duplicate, and deletion
 
   // A fresh sync instance reuses the persisted baseline after a full page reload.
   await page.reload();
-  await settings.click();
-  await page.getByRole("button", { name: "Connect Google Drive", exact: true }).click();
   await expect(page.getByRole("button", { name: "Up to date with Google Drive", exact: true })).toBeVisible();
   await expect(conflict).not.toBeVisible();
 
@@ -139,9 +141,34 @@ test("Drive import stays connected, manual sync does not duplicate, and deletion
   await expect(conflict).not.toBeVisible();
   expect(uploads).toBe(3);
   await page.reload();
-  await settings.click();
-  await page.getByRole("button", { name: "Connect Google Drive", exact: true }).click();
   await expect(page.getByRole("button", { name: "Up to date with Google Drive", exact: true })).toBeVisible();
   await expect(conflict).not.toBeVisible();
   await expect(page.getByText("Unsynced device edit", { exact: true })).toBeVisible();
+
+  // Logging out drops the token, but unlocking again resumes the previous opt-in.
+  await settings.click();
+  await page.getByRole("button", { name: "Lock vault & log out", exact: true }).click();
+  await page.getByLabel("Vault password", { exact: true }).fill("a secure drive test password");
+  await page.getByRole("button", { name: "Unlock my vault", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Up to date with Google Drive", exact: true })).toBeVisible();
+
+  // If interaction is required, reconnect is available on the dashboard without settings.
+  await page.evaluate(() => sessionStorage.setItem("test-block-google", "yes"));
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Reconnect Google Drive", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Reconnect Google Drive", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Up to date with Google Drive", exact: true })).toBeVisible();
+  await page.evaluate(() => sessionStorage.removeItem("test-block-google"));
+
+  // Explicit disconnect disables automatic reconnect on the next visit.
+  await settings.click();
+  await page.getByRole("button", { name: "Disconnect", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Connect Google Drive", exact: true })).toBeEnabled();
+  const requestsBeforeReload = lists;
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "A little clarity. A lot of possibility." })).toBeVisible();
+  await page.waitForTimeout(2200);
+  expect(lists).toBe(requestsBeforeReload);
+  await settings.click();
+  await expect(page.getByRole("button", { name: "Connect Google Drive", exact: true })).toBeVisible();
 });

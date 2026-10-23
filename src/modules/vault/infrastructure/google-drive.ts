@@ -21,6 +21,7 @@ interface DriveFileResponse extends Omit<DriveFile, "parents"> {
   appProperties?: Record<string, string>;
 }
 interface SyncBase { fileId: string; remoteVersion: string; localRevision: string; bookId: string; }
+interface SyncPreference { bookId: string; enabled: boolean; }
 export interface DriveSnapshot { file: DriveFile; bytes: Uint8Array; }
 export type DriveConflict = DriveSnapshot;
 interface Restore {
@@ -79,25 +80,54 @@ export class GoogleDriveSync {
   syncedRevision?: string;
   constructor(private readonly vault: SyncVault) {}
   get connected() { return Boolean(this.token && Date.now() < this.expires); }
-  async connect() {
-    if (this.busy) throw new Error("A Drive sync is already running.");
-    const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
-    if (!clientId) throw new Error("Google Drive is not configured. Set NEXT_PUBLIC_GOOGLE_CLIENT_ID and authorize this site's origin in Google Cloud.");
-    await loadIdentity();
-    const google = window.google;
-    if (!google) throw new Error("Google sign-in is unavailable.");
-    await new Promise<void>((resolve, reject) => {
-      const client = google.accounts.oauth2.initTokenClient({
-        client_id: clientId, scope: "https://www.googleapis.com/auth/drive.appdata",
-        callback: (response) => {
-          if (!response.access_token || response.error) { reject(new Error(`Google sign-in failed: ${response.error ?? "no access token"}`)); return; }
-          this.token = response.access_token;
-          this.expires = Date.now() + (response.expires_in ?? 3600) * 1000;
-          resolve();
-        },
-        error_callback: (error) => reject(new Error(`Google sign-in did not complete: ${error.type}`)),
+  async shouldResume(bookId: string) {
+    const preference = await this.vault.store.get<SyncPreference>("drive-preference");
+    if (preference) return preference.bookId === bookId && preference.enabled;
+    // Existing installations already opted in when creating their sync baseline.
+    const base = await this.vault.store.get<SyncBase>("drive-base");
+    return base?.bookId === bookId;
+  }
+  async rememberSync(enabled: boolean) {
+    const { id } = await this.vault.read();
+    await this.vault.store.set("drive-preference", { bookId: id, enabled } satisfies SyncPreference);
+  }
+  async connect(automatic = false) {
+    return this.exclusive(async () => {
+      const signal = this.session.signal;
+      const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+      if (!clientId) throw new Error("Google Drive is not configured. Set NEXT_PUBLIC_GOOGLE_CLIENT_ID and authorize this site's origin in Google Cloud.");
+      await loadIdentity();
+      signal.throwIfAborted();
+      const google = window.google;
+      if (!google) throw new Error("Google sign-in is unavailable.");
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => { finish(); reject(signal.reason); };
+        const timer = setTimeout(() => {
+          finish();
+          reject(new Error("Google sign-in timed out. Use Reconnect Google Drive to try again."));
+        }, 60000);
+        let completed = false;
+        const finish = () => { completed = true; clearTimeout(timer); signal.removeEventListener("abort", abort); };
+        signal.addEventListener("abort", abort, { once: true });
+        try {
+          const client = google.accounts.oauth2.initTokenClient({
+            client_id: clientId, scope: "https://www.googleapis.com/auth/drive.appdata",
+            callback: (response) => {
+              if (completed) return;
+              finish();
+              if (!response.access_token || response.error) { reject(new Error(`Google sign-in failed: ${response.error ?? "no access token"}`)); return; }
+              this.token = response.access_token;
+              this.expires = Date.now() + (response.expires_in ?? 3600) * 1000;
+              resolve();
+            },
+            error_callback: (error) => {
+              if (completed) return;
+              finish(); reject(new Error(`Google sign-in did not complete: ${error.type}`));
+            },
+          });
+          client.requestAccessToken({ prompt: automatic ? "none" : "" });
+        } catch (error) { finish(); reject(error); }
       });
-      client.requestAccessToken({ prompt: "" });
     });
   }
   disconnect() {
@@ -318,5 +348,6 @@ export class GoogleDriveSync {
     this.disconnect();
     await this.settled;
     await this.vault.store.set("drive-base", undefined);
+    await this.vault.store.set("drive-preference", undefined);
   }
 }
