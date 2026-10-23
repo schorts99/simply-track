@@ -59,9 +59,16 @@ export class GoogleDriveSync {
   private expires = 0;
   conflict?: DriveConflict;
   private busy = false;
+  private session = new AbortController();
+  private operationSignal?: AbortSignal;
+  private settled: Promise<void> = Promise.resolve();
+  get running() { return this.busy; }
+  cleanupWarning = false;
+  syncedRevision?: string;
   constructor(private readonly vault: SyncVault) {}
   get connected() { return Boolean(this.token && Date.now() < this.expires); }
   async connect() {
+    if (this.busy) throw new Error("A Drive sync is already running.");
     const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
     if (!clientId) throw new Error("Google Drive is not configured. Set NEXT_PUBLIC_GOOGLE_CLIENT_ID and authorize this site's origin in Google Cloud.");
     await loadIdentity();
@@ -81,14 +88,36 @@ export class GoogleDriveSync {
       client.requestAccessToken({ prompt: "" });
     });
   }
-  disconnect() { this.token = undefined; this.expires = 0; this.conflict = undefined; }
-  private async request(path: string, init: RequestInit = {}) {
+  disconnect() {
+    this.session.abort();
+    this.session = new AbortController();
+    this.token = undefined; this.expires = 0; this.conflict = undefined;
+  }
+  private async exclusive<T>(operation: () => Promise<T>) {
+    if (this.busy) throw new Error("A Drive sync is already running.");
+    this.busy = true;
+    let release!: () => void;
+    this.settled = new Promise<void>((resolve) => { release = resolve; });
+    const signal = this.session.signal;
+    this.operationSignal = signal;
+    this.cleanupWarning = false;
+    try {
+      signal.throwIfAborted();
+      return await operation();
+    } finally { this.busy = false; this.operationSignal = undefined; release(); }
+  }
+  dismissConflict() { this.conflict = undefined; }
+  private async request(path: string, init: RequestInit = {}, missingOk = false) {
     if (!this.connected) throw new Error("Connect to Google Drive again; your sign-in has expired.");
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Bearer ${this.token}`);
-    const response = await fetch(`https://www.googleapis.com${path}`, { ...init, headers, cache: "no-store" });
+    const signal = this.operationSignal ?? this.session.signal;
+    signal.throwIfAborted();
+    const response = await fetch(`https://www.googleapis.com${path}`, { ...init, headers, cache: "no-store", signal });
+    signal.throwIfAborted();
     if (response.status === 401) { this.disconnect(); throw new Error("Google sign-in expired. Reconnect to sync."); }
-    if (!response.ok) throw new Error(`Google Drive request failed (${response.status}). Your local vault is unchanged.`);
+    if (missingOk && response.status === 404) return response;
+    if (!response.ok) throw new Error(`Google Drive request failed (${response.status}). Sync did not finish; check the current device and Drive copies before retrying.`);
     return response;
   }
   private async listSnapshots(): Promise<DriveFile[]> {
@@ -124,7 +153,15 @@ export class GoogleDriveSync {
     const heads = new Set(files.filter((file) => !parentIds.has(file.id)).map((file) => file.id));
     const obsolete = files.filter((file) => !heads.has(file.id) && Date.parse(file.createdTime) < cutoff);
     for (const file of obsolete) {
-      await this.request(`/drive/v3/files/${encodeURIComponent(file.id)}`, { method: "DELETE" });
+      await this.request(`/drive/v3/files/${encodeURIComponent(file.id)}`, { method: "DELETE" }, true);
+    }
+  }
+  private async cleanup() {
+    try { await this.pruneHistory(); }
+    catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      this.cleanupWarning = true;
+      console.warn("Drive sync completed, but snapshot cleanup failed.", error);
     }
   }
   private async download(file: DriveFile) {
@@ -137,12 +174,11 @@ export class GoogleDriveSync {
   }
   private async captureConflict(files: DriveFile[]) {
     const snapshots = await Promise.all(files.map(async (file) => ({ file, bytes: await this.download(file) })));
+    this.operationSignal?.throwIfAborted();
     this.conflict = { snapshots };
   }
   async sync(): Promise<"uploaded" | "current" | "conflict"> {
-    if (this.busy) throw new Error("A Drive sync is already running.");
-    this.busy = true;
-    try {
+    return this.exclusive(async () => {
       return await this.vault.serial(async () => {
         const leaves = await this.leaves();
         if (!this.vault.isOpen()) {
@@ -157,7 +193,7 @@ export class GoogleDriveSync {
           if (base) throw new Error("The previously synced Drive vault is missing. Disconnect and clear the sync link in settings before creating a new remote copy.");
           const created = await this.createSnapshot(bytes, []);
           await this.saveBase(created, state.revision, state.id);
-          await this.pruneHistory();
+          await this.cleanup();
           return "uploaded";
         }
         if (leaves.length !== 1) {
@@ -170,32 +206,40 @@ export class GoogleDriveSync {
           return "conflict";
         }
         if (base.localRevision === state.revision) {
-          await this.pruneHistory();
+          this.syncedRevision = state.revision;
+          await this.cleanup();
           return "current";
         }
         const created = await this.createSnapshot(bytes, [file.id]);
         await this.saveBase(created, state.revision, state.id);
-        await this.pruneHistory();
+        await this.cleanup();
         return "uploaded";
       });
-    } finally { this.busy = false; }
+    });
   }
   private async createSnapshot(bytes: Uint8Array, parents: string[]) {
     if (parents.length > 30) throw new Error("Too many concurrent Drive copies to resolve automatically. Your vaults are unchanged; export backups and contact support.");
-    const form = new FormData();
-    form.append("metadata", new Blob([JSON.stringify({
+    const boundary = `simplytrack_${crypto.randomUUID().replaceAll("-", "")}`;
+    const metadata = JSON.stringify({
       name: VAULT_NAME,
       parents: ["appDataFolder"],
       appProperties: Object.fromEntries(parents.map((id, index) => [`${PARENT_PROPERTY_PREFIX}${index}`, id])),
-    })], { type: "application/json" }));
-    form.append("file", new Blob([buffer(bytes)], { type: "application/octet-stream" }));
+    });
+    const body = new Blob([
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`,
+      `--${boundary}\r\nContent-Type: application/octet-stream\r\n\r\n`,
+      buffer(bytes),
+      `\r\n--${boundary}--\r\n`,
+    ]);
     const response = await this.request("/upload/drive/v3/files?uploadType=multipart&fields=id,name,version,createdTime,appProperties", {
-      method: "POST", body: form,
+      method: "POST", headers: { "Content-Type": `multipart/related; boundary=${boundary}` }, body,
     });
     return driveFile(await response.json() as DriveFileResponse);
   }
-  private saveBase(file: DriveFile, localRevision: string, bookId: string) {
-    return this.vault.store.set("drive-base", { fileId: file.id, remoteVersion: file.version, localRevision, bookId } satisfies SyncBase);
+  private async saveBase(file: DriveFile, localRevision: string, bookId: string) {
+    this.operationSignal?.throwIfAborted();
+    await this.vault.store.set("drive-base", { fileId: file.id, remoteVersion: file.version, localRevision, bookId } satisfies SyncBase);
+    this.syncedRevision = localRevision;
   }
   private async verifyConflictIsCurrent(pending: DriveConflict) {
     const current = await this.leaves();
@@ -206,32 +250,48 @@ export class GoogleDriveSync {
     }
   }
   async useDrive(fileId: string, password: string) {
-    const pending = this.conflict;
-    if (!pending) throw new Error("No Drive conflict is pending.");
-    await this.verifyConflictIsCurrent(pending);
-    const selected = pending.snapshots.find(({ file }) => file.id === fileId);
-    if (!selected) throw new Error("Choose a current Drive snapshot before resolving.");
-    await this.vault.replace(selected.bytes, password);
-    const state = await this.vault.read();
-    const resolved = await this.createSnapshot(await this.vault.export(), pending.snapshots.map(({ file }) => file.id));
-    await this.saveBase(resolved, state.revision, state.id);
-    this.conflict = undefined;
-    await this.pruneHistory();
+    return this.exclusive(async () => {
+      const signal = this.session.signal;
+      const pending = this.conflict;
+      if (!pending) throw new Error("No Drive conflict is pending.");
+      await this.verifyConflictIsCurrent(pending);
+      const selected = pending.snapshots.find(({ file }) => file.id === fileId);
+      if (!selected) throw new Error("Choose a current Drive snapshot before resolving.");
+      const commit = await this.vault.prepareReplacement(selected.bytes, password);
+      signal.throwIfAborted();
+      const resolved = pending.snapshots.length === 1 ? selected.file
+        : await this.createSnapshot(selected.bytes, pending.snapshots.map(({ file }) => file.id));
+      signal.throwIfAborted();
+      try {
+        await commit();
+        await this.vault.serial(async () => {
+          const state = await this.vault.read();
+          await this.saveBase(resolved, state.revision, state.id);
+        });
+      } catch (error) {
+        throw new Error("The Drive choice could not be fully applied. Device data may have changed; review the displayed records and sync again. Your encrypted backup and Drive snapshots are preserved.", { cause: error });
+      }
+      this.conflict = undefined;
+      await this.cleanup();
+    });
   }
   async useDevice() {
-    const pending = this.conflict;
-    if (!pending) throw new Error("No Drive conflict is pending.");
-    await this.vault.serial(async () => {
-      await this.verifyConflictIsCurrent(pending);
-      const state = await this.vault.read();
-      const resolved = await this.createSnapshot(await this.vault.export(), pending.snapshots.map(({ file }) => file.id));
-      await this.saveBase(resolved, state.revision, state.id);
-      this.conflict = undefined;
-      await this.pruneHistory();
+    return this.exclusive(async () => {
+      const pending = this.conflict;
+      if (!pending) throw new Error("No Drive conflict is pending.");
+      await this.vault.serial(async () => {
+        await this.verifyConflictIsCurrent(pending);
+        const state = await this.vault.read();
+        const resolved = await this.createSnapshot(await this.vault.export(), pending.snapshots.map(({ file }) => file.id));
+        await this.saveBase(resolved, state.revision, state.id);
+        this.conflict = undefined;
+        await this.cleanup();
+      });
     });
   }
   async forgetLink() {
     this.disconnect();
+    await this.settled;
     await this.vault.store.set("drive-base", undefined);
   }
 }

@@ -131,6 +131,10 @@ export class Vault {
     return bytes;
   }
   async replace(bytes: Uint8Array, password: string) {
+    const commit = await this.prepareReplacement(bytes, password);
+    await commit();
+  }
+  async prepareReplacement(bytes: Uint8Array, password: string) {
     await this.initialize();
     const envelope = parseEnvelope(bytes);
     const key = await deriveKey(password, unbase64(envelope.salt));
@@ -138,7 +142,7 @@ export class Vault {
     const sql = await loadSqlite();
     const candidate = new sql.Database(plain);
     try { SqliteFinanceRepository.validate(candidate); } finally { candidate.close(); }
-    await this.serial(async () => {
+    return () => this.serial(async () => {
       await this.store.writeVault(bytes);
       await this.biometrics.disable();
       await this.open(bytes, key);

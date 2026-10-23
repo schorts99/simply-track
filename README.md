@@ -114,6 +114,8 @@ The device stores the last synced Drive snapshot/version and local revision. Sna
 
 Each snapshot records its parent snapshot IDs in Drive's app-private metadata. Sync uses this lineage to identify the current branch or concurrent branches without relying on browser-exposed ETags or overwriting an existing file. Deleting remote app data pauses synchronization with an actionable error. **Clear sync link** clears device metadata only, never remote files. Drive integration requires the operator's OAuth setup and a live account; automated tests mock Google endpoints.
 
+Opening a single Drive head adopts it without uploading a redundant snapshot. Multi-branch choices validate the password and SQLite data, then upload the resolution before replacing device data. All sync and resolution operations share an operation guard; disconnect aborts outstanding requests and ignores stale UI results. Dismissing a conflict keeps Google connected and pauses automatic sync until a committed edit or manual sync. Every committed edit, including deletions, can trigger sync. Cleanup failures are reported separately from successful vault synchronization; a snapshot already deleted by another device is treated as cleaned up.
+
 ## Offline and install
 
 `pnpm build` generates `public/sw.js` from the production build's exact JavaScript/CSS/font assets and caches the shell, icons and SQLite WASM. Only same-origin app assets are cached, never vault plaintext or Google responses. Offline support is registered in production only. Open the app online once and let service-worker installation finish before going offline. Updates activate once existing app tabs are closed; this prevents replacing runtime assets under an open vault.
@@ -126,10 +128,10 @@ Use the browser's Install app action, or **Share > Add to Home Screen** on iOS. 
 pnpm typecheck
 pnpm lint
 pnpm test
-pnpm build
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=drive-test-client pnpm build
 pnpm exec playwright install chromium
 pnpm test:e2e
 pnpm test:e2e:dev
 ```
 
-Unit tests cover aggregate invariants, customization rules, legacy settings upgrades, architectural boundaries, exact amounts, projections, authenticated encryption/tampering, real SQLite round trips, device-write rollback, event ordering and conditional Drive conflicts. Production-browser tests exercise desktop/mobile finance workflows, personalization, remembered reloads, tab locking, encrypted backup import and offline reload/writes on port 3100. `test:e2e:dev` specifically covers dialog lifecycle and personalization under React Strict Mode, reusing or starting the development server on port 3000. Actual Google OAuth and hardware-backed PRF require compatible real accounts/devices and are not simulated as successful live integrations.
+Unit tests cover aggregate invariants, customization rules, legacy settings upgrades, architectural boundaries, exact amounts, projections, authenticated encryption/tampering, real SQLite round trips, device-write rollback, event ordering, Drive snapshot conflicts, import failure handling, cancellation and retention. Production-browser tests exercise desktop/mobile finance workflows, personalization, remembered reloads, tab locking, encrypted backup import and offline reload/writes on port 3100. Drive browser regressions mock Google sign-in and API traffic; the build needs a public client ID (the dummy test ID above is sufficient). Never deploy that test build as your real OAuth configuration; rebuild with your deployment's client ID before publishing. `test:e2e:dev` specifically covers dialog lifecycle and personalization under React Strict Mode, reusing or starting the development server on port 3000. Actual Google OAuth and hardware-backed PRF require compatible real accounts/devices and are not simulated as successful live integrations.

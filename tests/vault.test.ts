@@ -4,8 +4,28 @@ import { FinanceService } from "../src/modules/finance/application/finance-servi
 import { emptyState } from "../src/modules/finance/domain/finance";
 import { base64, decrypt, deriveKey, encrypt, parseEnvelope, unbase64 } from "../src/modules/vault/infrastructure/crypto";
 import { loadSqlite, SqliteFinanceRepository } from "../src/modules/finance/infrastructure/sqlite-repository";
+import { Vault } from "../src/composition/vault";
 
 describe("encrypted SQLite persistence", () => {
+  it("validates a replacement and password without changing the device vault", async () => {
+    const sql = await loadSqlite();
+    const db = SqliteFinanceRepository.create(sql, emptyState());
+    const salt = base64(crypto.getRandomValues(new Uint8Array(16)));
+    const key = await deriveKey("a safe replacement password", unbase64(salt));
+    const bytes = await encrypt(db.export(), key, salt);
+    db.close();
+    const vault = new Vault();
+    const initialize = vi.spyOn(vault, "initialize").mockResolvedValue();
+    const write = vi.spyOn(vault.store, "writeVault").mockResolvedValue();
+    try {
+      const commit = await vault.prepareReplacement(bytes, "a safe replacement password");
+      expect(typeof commit).toBe("function");
+      expect(write).not.toHaveBeenCalled();
+      expect(vault.isOpen()).toBe(false);
+      await expect(vault.prepareReplacement(bytes, "wrong password")).rejects.toThrow();
+      expect(write).not.toHaveBeenCalled();
+    } finally { initialize.mockRestore(); write.mockRestore(); }
+  });
   it("upgrades legacy settings in existing SQLite books without changing records or revision", async () => {
     const sql = await loadSqlite();
     const state = emptyState();

@@ -407,6 +407,9 @@ export const spanish = {
   "Create a new Drive snapshot from this device. Previous Drive copies will be kept.": "Crear una nueva instantánea de Drive desde este dispositivo. Se conservarán las copias anteriores.",
   "Drive removes non-current snapshots after 30 days; each current branch copy is retained.": "Drive elimina las instantáneas que no son actuales después de 30 días; se conserva la copia actual de cada rama.",
   "Google Drive request failed ({status}). Your local vault is unchanged.": "Falló la solicitud a Google Drive ({status}). Tu bóveda local no ha cambiado.",
+  "Google Drive request failed ({status}). Sync did not finish; check the current device and Drive copies before retrying.": "Falló la solicitud a Google Drive ({status}). La sincronización no terminó; revisa las copias actuales del dispositivo y de Drive antes de reintentar.",
+  "Vault synced; old Drive snapshots could not be cleaned up. Cleanup will retry on the next sync.": "Bóveda sincronizada; no se pudieron eliminar las instantáneas antiguas de Drive. Se reintentará en la próxima sincronización.",
+  "The Drive choice could not be fully applied. Device data may have changed; review the displayed records and sync again. Your encrypted backup and Drive snapshots are preserved.": "No se pudo aplicar completamente la copia de Drive elegida. Los datos del dispositivo pueden haber cambiado; revisa los registros mostrados y sincroniza de nuevo. Se conservan la copia de seguridad cifrada y las instantáneas de Drive.",
   "Drive snapshot history is invalid. Your local vault is unchanged; export a backup before changing Drive data.": "El historial de instantáneas de Drive no es válido. La bóveda local no ha cambiado; exporta una copia de seguridad antes de modificar los datos de Drive.",
   "Too many concurrent Drive copies to resolve automatically. Your vaults are unchanged; export backups and contact support.": "Hay demasiadas copias de Drive simultáneas para resolverlas automáticamente. Las bóvedas no han cambiado; exporta copias de seguridad y contacta con soporte.",
   "The Drive copies changed. Sync again before resolving.": "Las copias de Drive han cambiado. Sincroniza de nuevo antes de resolver el conflicto.",
@@ -445,7 +448,7 @@ export function translateError(language: Language, message: string): string {
   if (offline) return translateMessage("Offline support could not be enabled: {detail}", { detail: translateError(language, offline[1]) });
   const google = /^Google sign-in (failed|did not complete): ([\s\S]*)$/.exec(message);
   if (google) return translateMessage(`Google sign-in ${google[1]}: {detail}`, { detail: translateMessage(google[2]) });
-  const request = /^Google Drive request failed \((\d+)\)\. Your local vault is unchanged\.$/.exec(message);
-  if (request) return translateMessage("Google Drive request failed ({status}). Your local vault is unchanged.", { status: request[1] });
+  const request = /^Google Drive request failed \((\d+)\)\. Sync did not finish; check the current device and Drive copies before retrying\.$/.exec(message);
+  if (request) return translateMessage("Google Drive request failed ({status}). Sync did not finish; check the current device and Drive copies before retrying.", { status: request[1] });
   return translateMessage(message);
 }

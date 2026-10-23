@@ -26,11 +26,13 @@ async function fixture() {
   vi.spyOn(vault, "isOpen").mockReturnValue(true);
   vi.spyOn(vault, "read").mockResolvedValue(state);
   vi.spyOn(vault, "export").mockResolvedValue(bytes);
+  const commit = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+  vi.spyOn(vault, "prepareReplacement").mockResolvedValue(commit);
   vi.spyOn(vault.store, "get").mockResolvedValue({ fileId: "root", remoteVersion: "1", localRevision: "older", bookId: state.id });
   const store = vi.spyOn(vault.store, "set").mockResolvedValue();
   const drive = new GoogleDriveSync(vault);
   await drive.connect();
-  return { drive, vault, state, bytes, store };
+  return { drive, vault, state, bytes, store, commit };
 }
 function fetchDrive(files: ReturnType<typeof file>[], bytes: Uint8Array, laterFiles = files) {
   let listCalls = 0;
@@ -38,7 +40,10 @@ function fetchDrive(files: ReturnType<typeof file>[], bytes: Uint8Array, laterFi
     const url = String(input);
     if (url.includes("alt=media")) return new Response(new Uint8Array(bytes));
     if (url.includes("/upload/drive/v3/files")) {
-      const metadata = JSON.parse(await ((init?.body as FormData).get("metadata") as Blob).text());
+      const body = await (init?.body as Blob).text();
+      const metadataPart = body.match(/\r\n\r\n([\s\S]*?)\r\n--/)?.[1];
+      if (!metadataPart) throw new Error("No snapshot metadata part found.");
+      const metadata = JSON.parse(metadataPart);
       const parents = Object.entries(metadata.appProperties as Record<string, string>)
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([, parent]) => parent);
@@ -50,13 +55,97 @@ function fetchDrive(files: ReturnType<typeof file>[], bytes: Uint8Array, laterFi
 }
 
 describe("Drive immutable snapshot sync", () => {
+  it("adopts a single Drive head without creating another snapshot and stays current", async () => {
+    const { drive, vault, bytes, commit, store } = await fixture();
+    const request = fetchDrive([file("remote")], bytes);
+    vi.stubGlobal("fetch", request);
+    expect(await drive.sync()).toBe("conflict");
+    await drive.useDrive("remote", "password");
+    expect(commit).toHaveBeenCalledOnce();
+    expect(request.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    vi.mocked(vault.store.get).mockResolvedValue(store.mock.calls[0][1]);
+    expect(await drive.sync()).toBe("current");
+  });
+
+  it("does not replace the device when the resolution upload fails", async () => {
+    const { drive, bytes, commit } = await fixture();
+    const request = fetchDrive([file("left"), file("right")], bytes);
+    vi.stubGlobal("fetch", request);
+    await drive.sync();
+    request.mockImplementationOnce(async () => list(file("left"), file("right")));
+    request.mockImplementationOnce(async () => json({}, 503));
+    await expect(drive.useDrive("left", "password")).rejects.toThrow("Sync did not finish");
+    expect(commit).not.toHaveBeenCalled();
+    expect(drive.conflict).toBeDefined();
+  });
+
+  it("rejects a wrong password before uploading or replacing anything", async () => {
+    const { drive, vault, bytes, commit } = await fixture();
+    const request = fetchDrive([file("left"), file("right")], bytes);
+    vi.stubGlobal("fetch", request);
+    await drive.sync();
+    vi.mocked(vault.prepareReplacement).mockRejectedValue(new Error("Password incorrect"));
+    await expect(drive.useDrive("left", "wrong")).rejects.toThrow("incorrect");
+    expect(commit).not.toHaveBeenCalled();
+    expect(request.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it("uploads a multi-branch choice before committing it locally", async () => {
+    const { drive, bytes, commit } = await fixture();
+    const request = fetchDrive([file("left"), file("right")], bytes);
+    vi.stubGlobal("fetch", request);
+    await drive.sync();
+    commit.mockImplementation(async () => {
+      expect(request.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true);
+    });
+    await drive.useDrive("right", "password");
+    expect(commit).toHaveBeenCalledOnce();
+    expect(drive.conflict).toBeUndefined();
+  });
+
+  it("reports a partial local apply explicitly when baseline persistence fails", async () => {
+    const { drive, bytes, commit, store } = await fixture();
+    vi.stubGlobal("fetch", fetchDrive([file("remote")], bytes));
+    await drive.sync();
+    store.mockRejectedValueOnce(new Error("Device full"));
+    await expect(drive.useDrive("remote", "password")).rejects.toThrow("Device data may have changed");
+    expect(commit).toHaveBeenCalledOnce();
+    expect(drive.conflict).toBeDefined();
+  });
+
+  it("guards resolution operations and cancels a pending request on disconnect", async () => {
+    const { drive } = await fixture();
+    let finish!: (response: Response) => void;
+    const request = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", request);
+    const syncing = drive.sync();
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+    await expect(drive.useDevice()).rejects.toThrow("already running");
+    drive.disconnect();
+    finish(list(file("root")));
+    await expect(syncing).rejects.toThrow();
+    expect(drive.connected).toBe(false);
+    expect(drive.conflict).toBeUndefined();
+  });
+
+  it("reports cleanup failure separately from a successfully synced vault", async () => {
+    const { drive, vault, state } = await fixture();
+    vi.mocked(vault.store.get).mockResolvedValue({ fileId: "root", remoteVersion: "1", localRevision: state.revision, bookId: state.id });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(list(file("root"))).mockResolvedValueOnce(json({}, 503)));
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await drive.sync()).toBe("current");
+    expect(drive.cleanupWarning).toBe(true);
+    expect(warning).toHaveBeenCalledOnce();
+  });
   it("creates the initial encrypted snapshot without a parent", async () => {
     const { drive, vault, state, store } = await fixture();
     vi.spyOn(vault.store, "get").mockResolvedValue(undefined);
     const request = fetchDrive([], new Uint8Array(), []);
     vi.stubGlobal("fetch", request);
     expect(await drive.sync()).toBe("uploaded");
-    const metadata = JSON.parse(await (((request.mock.calls[1][1] as RequestInit).body as FormData).get("metadata") as Blob).text());
+    const upload = request.mock.calls.find(([url]) => String(url).includes("/upload/drive/v3/files"))?.[1] as RequestInit;
+    const body = await (upload.body as Blob).text();
+    const metadata = JSON.parse(body.match(/\r\n\r\n([\s\S]*?)\r\n--/)![1]);
     expect(metadata.appProperties).toEqual({});
     expect(store).toHaveBeenCalledWith("drive-base", { fileId: "created", remoteVersion: "2", localRevision: state.revision, bookId: state.id });
   });
@@ -70,8 +159,9 @@ describe("Drive immutable snapshot sync", () => {
     const upload = request.mock.calls[1][1] as RequestInit;
     expect(upload.method).toBe("POST");
     expect(new Headers(upload.headers).has("If-Match")).toBe(false);
-    const form = upload.body as FormData;
-    const metadata = JSON.parse(await (form.get("metadata") as Blob).text());
+    expect(new Headers(upload.headers).get("Content-Type")).toMatch(/^multipart\/related; boundary=/);
+    const body = await (upload.body as Blob).text();
+    const metadata = JSON.parse(body.match(/\r\n\r\n([\s\S]*?)\r\n--/)![1]);
     expect(metadata.appProperties).toEqual({ stParent0: "root" });
     expect(store).toHaveBeenCalledWith("drive-base", { fileId: "created", remoteVersion: "2", localRevision: state.revision, bookId: state.id });
   });
@@ -95,7 +185,8 @@ describe("Drive immutable snapshot sync", () => {
     await drive.useDevice();
     const uploadCall = request.mock.calls.find(([url]) => String(url).includes("/upload/drive/v3/files"));
     const upload = uploadCall?.[1] as RequestInit;
-    const metadata = JSON.parse(await ((upload.body as FormData).get("metadata") as Blob).text());
+    const body = await (upload.body as Blob).text();
+    const metadata = JSON.parse(body.match(/\r\n\r\n([\s\S]*?)\r\n--/)![1]);
     expect(metadata.appProperties).toEqual({ stParent0: "left", stParent1: "right" });
     expect(store).toHaveBeenCalledWith("drive-base", { fileId: "created", remoteVersion: "2", localRevision: state.revision, bookId: state.id });
   });
@@ -125,13 +216,15 @@ describe("Drive immutable snapshot sync", () => {
       file("current", ["recent-parent"], "1", "2026-10-22T11:00:00.000Z"),
     ];
     const deleted: string[] = [];
+    let listings = 0;
     const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (init?.method === "DELETE") {
         deleted.push(decodeURIComponent(url.split("/").at(-1)!));
-        return new Response(null, { status: 204 });
+        return new Response(null, { status: 404 });
       }
-      return list(...snapshots);
+      listings++;
+      return list(...snapshots, ...(listings > 1 ? [file("old-branch-head", [], "1", "2026-09-01T12:00:00.000Z")] : []));
     });
     vi.stubGlobal("fetch", request);
     expect(await drive.sync()).toBe("current");
