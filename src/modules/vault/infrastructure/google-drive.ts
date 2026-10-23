@@ -22,7 +22,12 @@ interface DriveFileResponse extends Omit<DriveFile, "parents"> {
 }
 interface SyncBase { fileId: string; remoteVersion: string; localRevision: string; bookId: string; }
 export interface DriveSnapshot { file: DriveFile; bytes: Uint8Array; }
-export interface DriveConflict { snapshots: DriveSnapshot[]; }
+export type DriveConflict = DriveSnapshot;
+interface Restore {
+  file: DriveFile;
+  bytes: Uint8Array;
+  expectedRevision: string;
+}
 
 const VAULT_NAME = "simply-track.vault";
 const PARENT_PROPERTY_PREFIX = "stParent";
@@ -42,6 +47,9 @@ function loadIdentity() {
 }
 
 function driveFile(file: DriveFileResponse): DriveFile {
+  if (!file.id || !file.version || !Number.isFinite(Date.parse(file.createdTime))) {
+    throw new Error("Drive snapshot history is invalid. Your local vault is unchanged; export a backup before changing Drive data.");
+  }
   const parentProperties = Object.entries(file.appProperties ?? {})
     .filter(([key]) => key.startsWith(PARENT_PROPERTY_PREFIX))
     .sort(([left], [right]) => Number(left.slice(PARENT_PROPERTY_PREFIX.length)) - Number(right.slice(PARENT_PROPERTY_PREFIX.length)));
@@ -52,6 +60,10 @@ function driveFile(file: DriveFileResponse): DriveFile {
   )) throw new Error("Drive snapshot history is invalid. Your local vault is unchanged; export a backup before changing Drive data.");
   const parents = parentProperties.map(([, value]) => value);
   return { id: file.id, name: file.name, version: file.version, createdTime: file.createdTime, parents };
+}
+
+function newestFirst(left: DriveFile, right: DriveFile) {
+  return Date.parse(right.createdTime) - Date.parse(left.createdTime) || right.id.localeCompare(left.id);
 }
 
 export class GoogleDriveSync {
@@ -139,19 +151,16 @@ export class GoogleDriveSync {
     } while (pageToken);
     return files;
   }
-  private async leaves(): Promise<DriveFile[]> {
+  private async currentCopies(): Promise<DriveFile[]> {
     const files = await this.listSnapshots();
-    const parents = new Set(files.flatMap((file) => file.parents));
-    const leaves = files.filter((file) => !parents.has(file.id));
-    if (!leaves.length && files.length) throw new Error("Drive snapshot history is invalid. Your local vault is unchanged; export a backup before changing Drive data.");
-    return leaves.sort((left, right) => right.createdTime.localeCompare(left.createdTime) || left.id.localeCompare(right.id));
+    // Drive supplies the creation time; device clocks never choose the shared current copy.
+    return files.sort(newestFirst);
   }
   private async pruneHistory() {
     const files = await this.listSnapshots();
-    const parentIds = new Set(files.flatMap((file) => file.parents));
     const cutoff = Date.now() - SNAPSHOT_RETENTION_MS;
-    const heads = new Set(files.filter((file) => !parentIds.has(file.id)).map((file) => file.id));
-    const obsolete = files.filter((file) => !heads.has(file.id) && Date.parse(file.createdTime) < cutoff);
+    const current = [...files].sort(newestFirst)[0];
+    const obsolete = files.filter((file) => file.id !== current?.id && Date.parse(file.createdTime) < cutoff);
     for (const file of obsolete) {
       await this.request(`/drive/v3/files/${encodeURIComponent(file.id)}`, { method: "DELETE" }, true);
     }
@@ -172,49 +181,70 @@ export class GoogleDriveSync {
     if (!latest || latest.version !== file.version) throw new Error("The Drive vault changed while downloading. Sync again.");
     return bytes;
   }
-  private async captureConflict(files: DriveFile[]) {
-    const snapshots = await Promise.all(files.map(async (file) => ({ file, bytes: await this.download(file) })));
+  private async captureConflict(file: DriveFile) {
+    const bytes = await this.download(file);
     this.operationSignal?.throwIfAborted();
-    this.conflict = { snapshots };
+    this.conflict = { file, bytes };
   }
-  async sync(): Promise<"uploaded" | "current" | "conflict"> {
+  async sync(): Promise<"uploaded" | "restored" | "current" | "conflict"> {
     return this.exclusive(async () => {
-      return await this.vault.serial(async () => {
-        const leaves = await this.leaves();
+      const result = await this.vault.serial<"uploaded" | "current" | "conflict" | Restore>(async () => {
+        const copies = await this.currentCopies();
+        const file = copies[0];
         if (!this.vault.isOpen()) {
-          if (!leaves.length) throw new Error("There is no vault in this Google account yet. Create a local vault first.");
-          await this.captureConflict(leaves);
+          if (!file) throw new Error("There is no vault in this Google account yet. Create a local vault first.");
+          await this.captureConflict(file);
           return "conflict";
         }
         const state = await this.vault.read();
         const bytes = await this.vault.export();
         const base = await this.vault.store.get<SyncBase>("drive-base");
-        if (!leaves.length) {
+        if (!file) {
           if (base) throw new Error("The previously synced Drive vault is missing. Disconnect and clear the sync link in settings before creating a new remote copy.");
           const created = await this.createSnapshot(bytes, []);
           await this.saveBase(created, state.revision, state.id);
           await this.cleanup();
           return "uploaded";
         }
-        if (leaves.length !== 1) {
-          await this.captureConflict(leaves);
-          return "conflict";
-        }
-        const file = leaves[0];
-        if (!base || base.fileId !== file.id || base.bookId !== state.id || base.remoteVersion !== file.version) {
-          await this.captureConflict(leaves);
-          return "conflict";
-        }
-        if (base.localRevision === state.revision) {
+        const sameRemote = base?.fileId === file.id && base.bookId === state.id && base.remoteVersion === file.version;
+        if (sameRemote && base.localRevision === state.revision) {
           this.syncedRevision = state.revision;
           await this.cleanup();
           return "current";
+        }
+        if (!sameRemote) {
+          const remoteBytes = await this.download(file);
+          const remote = await this.vault.inspectSyncCopy(remoteBytes);
+          if (remote?.id === state.id && remote.revision === state.revision) {
+            await this.saveBase(file, state.revision, state.id);
+            await this.cleanup();
+            return "current";
+          }
+          if (remote?.id === state.id && base?.bookId === state.id && base.localRevision === state.revision) {
+            return { file, bytes: remoteBytes, expectedRevision: state.revision };
+          }
+          this.conflict = { file, bytes: remoteBytes };
+          return "conflict";
         }
         const created = await this.createSnapshot(bytes, [file.id]);
         await this.saveBase(created, state.revision, state.id);
         await this.cleanup();
         return "uploaded";
       });
+      if (typeof result === "string") return result;
+      this.operationSignal?.throwIfAborted();
+      const restored = await this.vault.restoreSyncCopy(result.bytes, result.expectedRevision, this.operationSignal);
+      if (!restored) {
+        this.conflict = { file: result.file, bytes: result.bytes };
+        return "conflict";
+      }
+      try {
+        await this.saveBase(result.file, restored.revision, restored.id);
+      } catch (error) {
+        throw new Error("The Drive choice could not be fully applied. Device data may have changed; review the displayed records and sync again. Your encrypted backup and Drive snapshots are preserved.", { cause: error });
+      }
+      await this.cleanup();
+      return "restored";
     });
   }
   private async createSnapshot(bytes: Uint8Array, parents: string[]) {
@@ -242,25 +272,20 @@ export class GoogleDriveSync {
     this.syncedRevision = localRevision;
   }
   private async verifyConflictIsCurrent(pending: DriveConflict) {
-    const current = await this.leaves();
-    const expected = pending.snapshots.map(({ file }) => `${file.id}:${file.version}`).sort();
-    const actual = current.map((file) => `${file.id}:${file.version}`).sort();
-    if (expected.length !== actual.length || expected.some((item, index) => item !== actual[index])) {
+    const current = (await this.currentCopies()).slice(0, 1);
+    if (current[0]?.id !== pending.file.id || current[0]?.version !== pending.file.version) {
       throw new Error("The Drive copies changed. Sync again before resolving.");
     }
   }
-  async useDrive(fileId: string, password: string) {
+  async useDrive(password: string) {
     return this.exclusive(async () => {
       const signal = this.session.signal;
       const pending = this.conflict;
       if (!pending) throw new Error("No Drive conflict is pending.");
       await this.verifyConflictIsCurrent(pending);
-      const selected = pending.snapshots.find(({ file }) => file.id === fileId);
-      if (!selected) throw new Error("Choose a current Drive snapshot before resolving.");
-      const commit = await this.vault.prepareReplacement(selected.bytes, password);
+      const commit = await this.vault.prepareReplacement(pending.bytes, password);
       signal.throwIfAborted();
-      const resolved = pending.snapshots.length === 1 ? selected.file
-        : await this.createSnapshot(selected.bytes, pending.snapshots.map(({ file }) => file.id));
+      const resolved = pending.file;
       signal.throwIfAborted();
       try {
         await commit();
@@ -282,7 +307,7 @@ export class GoogleDriveSync {
       await this.vault.serial(async () => {
         await this.verifyConflictIsCurrent(pending);
         const state = await this.vault.read();
-        const resolved = await this.createSnapshot(await this.vault.export(), pending.snapshots.map(({ file }) => file.id));
+        const resolved = await this.createSnapshot(await this.vault.export(), [pending.file.id]);
         await this.saveBase(resolved, state.revision, state.id);
         this.conflict = undefined;
         await this.cleanup();

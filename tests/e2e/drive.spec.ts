@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 
 // Run against a build with NEXT_PUBLIC_GOOGLE_CLIENT_ID set; all Google traffic is mocked.
 test("Drive import stays connected, manual sync does not duplicate, and deletions sync", async ({ page }, testInfo) => {
+  test.setTimeout(60000);
   await page.route("https://accounts.google.com/gsi/client", (route) => route.fulfill({
     contentType: "text/javascript",
     body: `window.google = { accounts: { oauth2: { initTokenClient: ({ callback }) => ({
@@ -21,6 +22,18 @@ test("Drive import stays connected, manual sync does not duplicate, and deletion
   const path = await downloaded.path();
   if (!path) throw new Error("No encrypted backup was downloaded.");
   const bytes = await readFile(path);
+  await page.getByRole("dialog").getByRole("button", { name: "Close dialog" }).click();
+  await page.getByRole("button", { name: "Add transaction", exact: true }).click();
+  await page.getByLabel("Description", { exact: true }).fill("Remote update record");
+  await page.getByLabel("Amount", { exact: true }).fill("12");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await settings.click();
+  const newerDownloadEvent = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export backup", exact: true }).click();
+  const newerDownload = await newerDownloadEvent;
+  const newerPath = await newerDownload.path();
+  if (!newerPath) throw new Error("No newer backup was downloaded.");
+  const newerBytes = await readFile(newerPath);
 
   const snapshots = [{ id: "remote", name: "simply-track.vault", version: "1", createdTime: new Date().toISOString(), appProperties: {} as Record<string, string> }];
   let uploads = 0;
@@ -29,7 +42,7 @@ test("Drive import stays connected, manual sync does not duplicate, and deletion
   await page.route("https://www.googleapis.com/**", async (route) => {
     const request = route.request();
     if (request.url().includes("alt=media")) {
-      await route.fulfill({ contentType: "application/octet-stream", body: bytes });
+      await route.fulfill({ contentType: "application/octet-stream", body: request.url().includes("/remote-new?") ? newerBytes : bytes });
     } else if (request.method() === "POST") {
       expect(request.headers()["content-type"]).toContain("multipart/related");
       const metadata = JSON.parse(request.postDataBuffer()!.toString().match(/\r\n\r\n([\s\S]*?)\r\n--/)![1]);
@@ -54,10 +67,27 @@ test("Drive import stays connected, manual sync does not duplicate, and deletion
   await page.getByRole("button", { name: "Sync now", exact: true }).click();
   await expect(conflict).toBeVisible();
   await conflict.getByLabel("Drive vault password").fill("a secure drive test password");
-  await conflict.getByRole("button", { name: "Use the Drive copy on this device" }).click();
+  await conflict.getByRole("button", { name: "Restore from Drive" }).click();
   await expect(conflict).not.toBeVisible();
   await page.waitForTimeout(2500);
   await expect(conflict).not.toBeVisible();
+  expect(uploads).toBe(0);
+
+  // A fresh sync instance reuses the persisted baseline after a full page reload.
+  await page.reload();
+  await settings.click();
+  await page.getByRole("button", { name: "Connect Google Drive", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Up to date with Google Drive", exact: true })).toBeVisible();
+  await expect(conflict).not.toBeVisible();
+
+  // Another device publishes newer data. A clean device restores it without prompting.
+  snapshots.push({ id: "remote-new", name: "simply-track.vault", version: "1", createdTime: new Date(Date.now() + 1000).toISOString(), appProperties: { stParent0: "remote" } });
+  await settings.click();
+  await page.getByRole("button", { name: "Sync now", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Sync now", exact: true })).toBeEnabled();
+  await expect(conflict).not.toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Close dialog" }).click();
+  await expect(page.getByText("Remote update record", { exact: true })).toBeVisible();
   expect(uploads).toBe(0);
 
   await settings.click();
@@ -90,4 +120,28 @@ test("Drive import stays connected, manual sync does not duplicate, and deletion
   await page.waitForTimeout(2600);
   await expect(conflict).not.toBeVisible();
   await expect(page.getByRole("button", { name: "Connect Google Drive", exact: true })).toBeVisible();
+
+  // Both copies change: offer exactly one restore/replace decision, never a branch picker.
+  slow = false;
+  await page.getByRole("dialog").getByRole("button", { name: "Close dialog" }).click();
+  await page.getByRole("button", { name: "Add transaction", exact: true }).click();
+  await page.getByLabel("Description", { exact: true }).fill("Unsynced device edit");
+  await page.getByLabel("Amount", { exact: true }).fill("7");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  snapshots.push({ id: "another-device", name: "simply-track.vault", version: "1", createdTime: new Date().toISOString(), appProperties: {} });
+  await settings.click();
+  await page.getByRole("button", { name: "Connect Google Drive", exact: true }).click();
+  await expect(conflict).toBeVisible();
+  await expect(conflict.getByRole("combobox")).toHaveCount(0);
+  await expect(conflict.getByRole("button", { name: "Restore from Drive", exact: true })).toBeVisible();
+  await conflict.getByRole("checkbox", { name: "Use this device's records as the shared current vault on Drive." }).check();
+  await conflict.getByRole("button", { name: "Replace Drive with this device", exact: true }).click();
+  await expect(conflict).not.toBeVisible();
+  expect(uploads).toBe(3);
+  await page.reload();
+  await settings.click();
+  await page.getByRole("button", { name: "Connect Google Drive", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Up to date with Google Drive", exact: true })).toBeVisible();
+  await expect(conflict).not.toBeVisible();
+  await expect(page.getByText("Unsynced device edit", { exact: true })).toBeVisible();
 });

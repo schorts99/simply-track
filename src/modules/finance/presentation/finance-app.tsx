@@ -57,7 +57,6 @@ export default function FinanceApp() {
   const [conflict, setConflict] = useState(false);
   const [autoSyncPaused, setAutoSyncPaused] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [driveSnapshotId, setDriveSnapshotId] = useState("");
   const [importBytes, setImportBytes] = useState<Uint8Array | null>(null);
   const [deletion, setDeletion] = useState<{ kind: "transaction" | "budget" | "goal" | "scenario"; id: string } | null>(null);
   const [install, setInstall] = useState<InstallPrompt | null>(null);
@@ -119,9 +118,9 @@ export default function FinanceApp() {
       if (session !== driveSession.current) return;
       if (result === "conflict") {
         setSettings(false);
-        setDriveSnapshotId(drive.conflict?.snapshots[0]?.file.id ?? "");
         setConflict(true); setSyncStatus("Drive copy needs review");
       } else {
+        if (result === "restored") setState(await vault.read());
         syncedRevision.current = drive.syncedRevision;
         setAutoSyncPaused(false);
         setDriveConnected(drive.connected);
@@ -133,8 +132,9 @@ export default function FinanceApp() {
       setAutoSyncPaused(true);
       setError(message(error));
       setDriveConnected(drive.connected);
+      if (vault.isOpen()) setState(await vault.read());
     } finally { setSyncing(false); }
-  }, [drive]);
+  }, [drive, vault]);
   useEffect(() => {
     if (!state || !driveConnected || !online || conflict || autoSyncPaused || busy || syncing || syncedRevision.current === state.revision) return;
     const timer = setTimeout(() => { void syncNow(); }, 1800);
@@ -172,7 +172,7 @@ export default function FinanceApp() {
     try {
       if (password !== undefined) {
         if (await vault.exists()) downloadVault(await vault.export(), `simply-track-device-before-sync-${Date.now()}.vault`);
-        await drive.useDrive(driveSnapshotId, password);
+        await drive.useDrive(password);
       } else await drive.useDevice();
       syncedRevision.current = drive.syncedRevision;
       setConflict(false);
@@ -283,12 +283,11 @@ export default function FinanceApp() {
     </Modal>}
     {importBytes && <Modal title={exists ? t("Replace this device's vault?") : t("Open an encrypted backup")} error={error} onClose={() => setImportBytes(null)}><p>{exists ? t("This replaces all local records. An encrypted backup of your current vault will be downloaded first. Your Drive copy is not automatically replaced.") : t("Enter the password used to encrypt this vault.")}</p><form className="stack" onSubmit={(event) => { event.preventDefault(); const password = String(new FormData(event.currentTarget).get("password")); void perform(async () => { if (exists) downloadVault(await vault.export(), `simply-track-before-import-${Date.now()}.vault`); disconnectDrive(); await drive.forgetLink(); await vault.replace(importBytes, password); setDriveConnected(false); setSyncStatus("Stored on this device"); setBiometric(false); setExists(true); setState(await vault.read()); setImportBytes(null); setSettings(false); }, "Encrypted vault imported"); }}><label>{t("Backup password")}<input name="password" type="password" autoComplete="current-password" required /></label>{exists && <label className="checkbox"><input type="checkbox" required />{t("I understand this replaces my device's records.")}</label>}<button className="button primary" disabled={busy}>{t("Unlock & import vault")}</button></form></Modal>}
     {conflict && <Modal title={t("Choose the vault to keep")} error={error} onClose={() => { if (operation.current || drive.running) return; setConflict(false); drive.dismissConflict(); setAutoSyncPaused(true); setSyncStatus("Sync paused; saved on device"); }}>
-      <p>{t("The Drive copy is different from this device's last synced version. Records are never silently merged or overwritten.")}</p><p className="help">{t("Drive snapshots are immutable. Choosing a copy creates a new snapshot and keeps previous copies in Drive. The current device vault is downloaded as an encrypted backup before replacement.")} {t("Drive removes non-current snapshots after 30 days; each current branch copy is retained.")}</p>
+      <p>{t("Choose between the current Drive vault and this device's records. If both have changed, restoring Drive replaces device records; replacing Drive publishes this device's records for all devices.")}</p><p className="help">{t("There is one shared current vault. Previous Drive versions are encrypted backups kept for 30 days. Before restoring Drive, your device copy is downloaded as an encrypted backup.")}</p>
       <form className="stack" onSubmit={(event) => { event.preventDefault(); const password = String(new FormData(event.currentTarget).get("password")); void perform(() => resolveDrive(password), "Opened the Drive vault"); }}>
-        {drive.conflict && drive.conflict.snapshots.length > 1 && <label>{t("Choose a Drive snapshot")}<select value={driveSnapshotId} onChange={(event) => setDriveSnapshotId(event.target.value)} required>{drive.conflict.snapshots.map(({ file }) => <option key={file.id} value={file.id}>{t("Drive copy from {date}", { date: new Date(file.createdTime).toLocaleString(language) })}</option>)}</select></label>}
-        <label>{t("Drive vault password")}<input name="password" type="password" autoComplete="current-password" required /></label><button className="button primary" disabled={busy || !driveSnapshotId}><Cloud size={16} />{t("Use the Drive copy on this device")}</button>
+        <label>{t("Drive vault password")}<input name="password" type="password" autoComplete="current-password" required /></label><button className="button primary" disabled={busy}><Cloud size={16} />{t("Restore from Drive")}</button>
       </form>
-      {state && <form className="stack conflict-device" onSubmit={(event) => { event.preventDefault(); void perform(() => resolveDrive(), "Uploaded the device vault"); }}><label className="checkbox"><input type="checkbox" required />{t("Create a new Drive snapshot from this device. Previous Drive copies will be kept.")}</label><button className="button secondary" disabled={busy}>{t("Keep this device's copy instead")}</button></form>}
+      {state && <form className="stack conflict-device" onSubmit={(event) => { event.preventDefault(); void perform(() => resolveDrive(), "Uploaded the device vault"); }}><label className="checkbox"><input type="checkbox" required />{t("Use this device's records as the shared current vault on Drive.")}</label><button className="button secondary" disabled={busy}>{t("Replace Drive with this device")}</button></form>}
     </Modal>}
   </>;
 }

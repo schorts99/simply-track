@@ -134,6 +134,27 @@ export class Vault {
     const commit = await this.prepareReplacement(bytes, password);
     await commit();
   }
+  async inspectSyncCopy(bytes: Uint8Array) {
+    const envelope = parseEnvelope(bytes);
+    if (!this.key || envelope.salt !== this.salt) return undefined;
+    const sql = await loadSqlite();
+    const db = new sql.Database(await decrypt(envelope, this.key));
+    try {
+      const { id, revision } = SqliteFinanceRepository.validate(db);
+      return { id, revision };
+    } finally { db.close(); }
+  }
+  async restoreSyncCopy(bytes: Uint8Array, expectedRevision: string, signal?: AbortSignal) {
+    return this.serial(async () => {
+      const remote = await this.inspectSyncCopy(bytes);
+      const current = await this.read();
+      if (!remote || !this.active || !this.key || current.id !== remote.id || current.revision !== expectedRevision) return undefined;
+      signal?.throwIfAborted();
+      await this.store.writeVault(bytes);
+      await this.open(bytes, this.key);
+      return remote;
+    });
+  }
   async prepareReplacement(bytes: Uint8Array, password: string) {
     await this.initialize();
     const envelope = parseEnvelope(bytes);

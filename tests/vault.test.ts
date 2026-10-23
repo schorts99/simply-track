@@ -7,6 +7,42 @@ import { loadSqlite, SqliteFinanceRepository } from "../src/modules/finance/infr
 import { Vault } from "../src/composition/vault";
 
 describe("encrypted SQLite persistence", () => {
+  it("restores same-key sync data only if the device has not changed, keeping its unlock session", async () => {
+    const sql = await loadSqlite();
+    const original = emptyState();
+    const newer = { ...original, revision: crypto.randomUUID(), settings: { ...original.settings, workspaceName: "Updated on another device" } };
+    const salt = base64(crypto.getRandomValues(new Uint8Array(16)));
+    const password = "a safe automatic restore password";
+    const key = await deriveKey(password, unbase64(salt));
+    const seal = async (state: typeof original) => {
+      const db = SqliteFinanceRepository.create(sql, state);
+      try { return await encrypt(db.export(), key, salt); } finally { db.close(); }
+    };
+    const before = await seal(original);
+    const after = await seal(newer);
+    const otherBook = await seal({ ...newer, id: crypto.randomUUID() });
+    const vault = new Vault();
+    const initialize = vi.spyOn(vault, "initialize").mockResolvedValue();
+    const write = vi.spyOn(vault.store, "writeVault").mockResolvedValue();
+    const set = vi.spyOn(vault.store, "set").mockResolvedValue();
+    const disable = vi.spyOn(vault.biometrics, "disable").mockResolvedValue();
+    vi.stubGlobal("sessionStorage", { setItem: vi.fn(), removeItem: vi.fn() });
+    try {
+      await vault.replace(before, password);
+      expect(await vault.inspectSyncCopy(after)).toEqual({ id: original.id, revision: newer.revision });
+      expect(await vault.restoreSyncCopy(after, "a revision that is no longer current")).toBeUndefined();
+      expect(await vault.restoreSyncCopy(otherBook, original.revision)).toBeUndefined();
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(await vault.restoreSyncCopy(after, original.revision)).toEqual({ id: original.id, revision: newer.revision });
+      expect(await vault.read()).toMatchObject(newer);
+      expect(write).toHaveBeenCalledTimes(2);
+      expect(disable).toHaveBeenCalledTimes(1);
+      expect(set).toHaveBeenCalledTimes(1);
+    } finally {
+      await vault.logout();
+      initialize.mockRestore(); write.mockRestore(); set.mockRestore(); disable.mockRestore(); vi.unstubAllGlobals();
+    }
+  });
   it("validates a replacement and password without changing the device vault", async () => {
     const sql = await loadSqlite();
     const db = SqliteFinanceRepository.create(sql, emptyState());
