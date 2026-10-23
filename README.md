@@ -1,36 +1,131 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SimplyTrack
 
-## Getting Started
+The minimalist cat identity lives in `public/logo.svg` (square) and `public/icon.svg` (rounded app icon). Run `node scripts/generate-icons.mjs` after editing the square logo to regenerate the rounded SVG, PWA PNGs, Apple touch icon, maskable icon, and favicon.
 
-First, run the development server:
+A responsive, local-first personal finance PWA built with Next.js and React. The adjacent `../ui` project is a visual/product reference; this directory is the implementation.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
+## Run
+
+Requires Node.js 20.9+ and pnpm.
+
+```sh
+pnpm install
 pnpm dev
-# or
-bun dev
+# Production, including generated offline caches:
+pnpm build
+pnpm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000`. Production deployments must use HTTPS. No finance backend, account database, or server-side storage is used. No external fonts or analytics are loaded.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Features
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Monthly overview, quick expenses, transaction creation/editing/deletion and search.
+- Category budgets, savings goals, income-based 50/30/20 analysis.
+- Configurable 1–24 month estimates and saved what-if scenarios, separate from actual records.
+- Encrypted SQLite vault, export/import, remembered tab sessions, explicit logout.
+- Optional encrypted Google Drive sync with conflict resolution.
+- Optional WebAuthn PRF device unlock; a platform authenticator may use biometrics or a device PIN.
+- Installable app, mobile navigation, keyboard-accessible dialogs and offline operation.
+- English and Spanish UI, including localized categories, validation messages, dates and currency formatting.
+- Light, dark and system appearance, including dialogs, charts, forms and mobile navigation.
+- Personal profile/workspace names, ISO currencies, editable expense/income catalogs and payment methods, custom quick actions, and configurable forecast assumptions.
+- Readable light/dark surfaces, touch-friendly mobile controls, sticky dialog headings/save actions, recoverable search filters and keyboard-scrollable forecast tables.
 
-## Learn More
+## Personalization
 
-To learn more about Next.js, take a look at the following resources:
+Open **Settings & storage** (the sliders icon on mobile), then **Edit preferences**. Set your name, workspace name and display currency; add or rename expense categories, income categories and payment methods; mark expense categories as needs for the planning breakdown; and configure up to 12 quick expense shortcuts. Remove all shortcuts to hide that section. Budgets, goals and scenarios can be created, edited and deleted from their respective screens.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Catalog entries have stable identifiers: renaming changes their display throughout the app without rewriting transaction history. Archive an entry to hide it from new-record forms; existing transactions and budgets can still be edited with that archived option. Keep at least one active entry per catalog. Quick actions must be changed or removed before archiving options they use. Custom names remain literal in either language.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Forecast preferences include expected monthly income, optional expected monthly expenses, a signed opening balance and a 1–24 month horizon. Blank expected expenses retain the recorded/recurring-spending estimate; an explicit zero means no projected expenses. Opening balance affects projections, not monthly income/expense totals. Currency changes relabel amounts, not convert them. New transactions and quick actions use the selected month, so records do not disappear into another month's view.
 
-## Deploy on Vercel
+All these preferences are part of the encrypted SQLite book and travel with exports and Google Drive vault sync. Old vaults receive the original defaults in memory when opened; their records, identifiers and revision are unchanged until a command is saved. Language and appearance remain device-local preferences.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Appearance
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The default **System** appearance follows `prefers-color-scheme`, including live device changes. Choose **Light**, **Dark**, or **System** on the unlock screen or in settings. Explicit choices are saved to `localStorage` under `simply-track-theme`, survive reloads and logout, and are independent of the encrypted vault. No default preference is written until the user chooses one. Invalid saved values fall back to System. Storage failures display a warning while still applying the selection for the current session.
+
+A small first-party script applies the saved/system theme before rendering to avoid an opposite-theme flash. Theme changes also update native control color schemes and the browser's theme color. Appearance preferences synchronize between tabs through storage events, and work offline.
+
+## Language
+
+On first use, the app selects English or Spanish from the device's ordered language preferences (`navigator.languages`, including regional variants such as `es-CR`). Unsupported device languages fall back to English. Use **Language / Idioma** on the unlock screen or in **Settings & storage** to override it. Only an explicit choice is saved to `localStorage` under `simply-track-language`; it takes precedence over the device language on later visits, survives logout, and is device/browser-specific, not synced with the vault. If local storage is unavailable, a visible warning explains that the selection only lasts for the session.
+
+Translations and interpolation live in `src/shared/i18n/`, with no dependency on finance storage. The document's `lang` attribute follows the selected language. Categories and payment methods retain their stable stored identifiers; user-entered descriptions, custom catalog names, notes, goal names and scenario names are never translated. Browser-owned date/number input controls and native validation prompts follow the browser/OS's own localization support.
+
+New vaults start empty. Amounts use integer hundredths, with at most two decimal input places, including currencies conventionally displayed without fractional units. Changing currency relabels amounts; it does not convert them. Savings-goal allocations are informational and do not move money. Monthly recurring flags inform forecasts, not automatic transaction creation. Forecast assumptions are shown in the app; recurring records are summed, not deduplicated into subscriptions.
+
+## Architecture
+
+Source code uses **domain-first vertical slices**, with layers inside each module rather than global layer folders:
+
+```text
+src/
+  modules/
+    finance/
+      domain/          # Aggregate, transaction entity, settings, invariants and projections
+      application/     # Use cases and finance repository port
+      infrastructure/  # SQLite repository adapter
+      presentation/    # Finance views, editors and app shell
+    vault/
+      application/     # Sync-vault port
+      infrastructure/  # Encryption, device storage, biometrics and Drive adapter
+  composition/         # Runtime wiring: encrypted persistence + finance service + event bus
+  shared/
+    presentation/      # Accessible dialogs and small UI primitives
+    i18n/              # English/Spanish messages and language selection
+    theme/             # Device-local appearance preferences
+```
+
+`src/modules/finance/domain/finance.ts` is the finance bounded context. `FinanceBook` is the aggregate root controlling the book's consistency boundary; `Transaction` is an entity; IDs are value objects; and monetary values are validated integer minor units. Budget, goal, scenario and personalized settings records belong to the book. The domain uses `AggregateRoot`, `Entity`, `UUIDValue` and `DomainEvent` from `@schorts/shared-kernel`.
+
+`src/modules/finance/application/finance-service.ts` contains the use case and repository port. Commands reconstruct an aggregate, enforce invariants, persist the snapshot and domain events together, then publish `FinanceChanged` through the shared kernel's `InMemoryEventBus`. Presentation subscribes to committed events. SQLite includes indexed transaction rows, budget/goal/scenario tables, the aggregate snapshot, and a durable domain-event audit table. This is event-driven application coordination, **not event sourcing**; the snapshot is authoritative. The event audit is not a distributed outbox and is not replayed into external side effects. Drive sync is triggered from the committed state and is independently retryable.
+
+The browser composition root (`Vault` in `src/composition/vault.ts`, created by `getVault`) injects repositories and the event bus into application services with constructors. The Drive adapter depends on the vault module's `SyncVault` port, not the concrete composition root or finance internals. Explicit, typed constructor DI avoids a reflection/decorator container for this small graph. Domain/application layers have no React or browser-storage dependencies.
+
+Changes are serialized, and a Web Lock holds exclusive access for the open tab. Another tab is refused rather than allowed to overwrite the device file. SQLite changes and their events are committed before publishing; persistence failure restores the previous in-memory database and surfaces an error. The whole SQLite snapshot is encrypted and written after each command, so this design targets personal-sized ledgers (imports are limited to 64 MB), not high-volume accounting.
+
+## Storage and encryption
+
+- `sql.js` runs real SQLite in browser memory. Its WASM is copied locally at install time.
+- At rest, the complete SQLite image is encrypted with AES-256-GCM, a random 96-bit nonce for every write, and authenticated version/salt metadata. Password keys use PBKDF2-HMAC-SHA-256 with 600,000 iterations and a random 128-bit salt.
+- The `.vault` file is a versioned encrypted envelope, not a plaintext `.sqlite` file. Standard SQLite tools cannot open it without decryption.
+- Device persistence uses the Origin Private File System (`simply-track.vault`). Browsers without OPFS use IndexedDB. The selected backend is pinned. This is browser-private storage, not a file in the user's Documents folder. **Export backup** downloads a portable encrypted file that can be saved anywhere.
+- Site-data deletion, uninstall policies, browser eviction, device loss or forgotten passwords can make data unrecoverable. Persistent-storage permission is requested, but the browser can deny it. Keep independent encrypted backups.
+- The password is never stored or sent to a server. A non-extractable `CryptoKey` is stored in IndexedDB alongside a random token held in `sessionStorage`, so reloads in the same tab remain unlocked. Logout removes that key and token, closes SQLite, and drops Google access tokens. Closing a tab removes its session token; a subsequent tab must unlock again.
+- Remembered unlock deliberately trades stronger at-rest session isolation for convenience. Same-origin malicious code, browser extensions with sufficient privileges, device compromise, or anyone using an unlocked tab can access the data. Encryption does not protect an already-unlocked session. Use a trusted HTTPS origin and lock the vault on shared devices. There is no password recovery.
+- Device unlock wraps the vault encryption key with a WebAuthn PRF-derived AES key, rather than treating a biometric prompt as proof without cryptography. The credential/wrapped key is local, never exported or synced, and is invalidated when importing/replacing a vault. Enabling it requires confirming the password. Unsupported PRF authenticators produce an explicit error; password unlock remains available.
+
+## Google Drive setup
+
+1. Enable Google Drive API in a Google Cloud project.
+2. Configure an OAuth consent screen and a **Web application** OAuth client. Add the exact deployed origin (and `http://localhost:3000` for development) as an authorized JavaScript origin. Add test users if the app is in testing.
+3. Copy `.env.example` to `.env.local` and set `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. This is a public client ID; do not put a client secret in the browser. Rebuild after changing it.
+4. Connect in **Settings & storage**. On a second device, choose **Open from Drive** on the welcome screen and enter the same vault password.
+
+The app requests only `drive.appdata` and stores `simply-track.vault` in Google's private app-data folder (not the user's visible My Drive). Google access tokens remain in memory, expire normally, and must be reauthorized after reload. Sync runs after committed edits while connected and online; use **Sync now** to fetch edits from another device without a local change. It is not a background/cloud daemon.
+
+The device stores the last synced Drive file/version and local revision. Divergence opens an explicit choice between the Drive and device copies; the losing copy is downloaded as an encrypted backup before replacement. This is whole-vault conflict resolution, not record-level merging. The UI requires confirmation before overwriting Drive. Keep downloaded backups until you verify the result.
+
+Uploads require an exposed HTTP ETag and `If-Match`; if revision protection is unavailable, synchronization stops rather than writing unsafely. HTTP 412 and authentication errors are surfaced without discarding local edits. The upload response's version is the sync baseline, avoiding a race with a later writer. Deleting remote app data or creating duplicate vault files pauses synchronization with an actionable error. **Clear sync link** clears device metadata only, never remote files. Drive integration requires the operator's OAuth setup and a live account; automated tests mock Google endpoints.
+
+## Offline and install
+
+`pnpm build` generates `public/sw.js` from the production build's exact JavaScript/CSS/font assets and caches the shell, icons and SQLite WASM. Only same-origin app assets are cached, never vault plaintext or Google responses. Offline support is registered in production only. Open the app online once and let service-worker installation finish before going offline. Updates activate once existing app tabs are closed; this prevents replacing runtime assets under an open vault.
+
+Use the browser's Install app action, or **Share > Add to Home Screen** on iOS. Production needs HTTPS; localhost is allowed for development. Web Locks, IndexedDB, Web Crypto and WebAssembly are required. OPFS, install prompts, persistent-storage grants and WebAuthn PRF are capability-dependent enhancements. Deploy at the origin root (asset and worker paths assume `/`).
+
+## Checks
+
+```sh
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm build
+pnpm exec playwright install chromium
+pnpm test:e2e
+pnpm test:e2e:dev
+```
+
+Unit tests cover aggregate invariants, customization rules, legacy settings upgrades, architectural boundaries, exact amounts, projections, authenticated encryption/tampering, real SQLite round trips, device-write rollback, event ordering and conditional Drive conflicts. Production-browser tests exercise desktop/mobile finance workflows, personalization, remembered reloads, tab locking, encrypted backup import and offline reload/writes on port 3100. `test:e2e:dev` specifically covers dialog lifecycle and personalization under React Strict Mode, reusing or starting the development server on port 3000. Actual Google OAuth and hardware-backed PRF require compatible real accounts/devices and are not simulated as successful live integrations.

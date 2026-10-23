@@ -4,23 +4,35 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build && node scripts/build-sw.mjs",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:dev": "PLAYWRIGHT_DEV=1 playwright test tests/e2e/customization.spec.ts",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node scripts/copy-sqlite.mjs && node scripts/generate-icons.mjs"
   },
   "dependencies": {
+    "@schorts/shared-kernel": "^10.6.2",
+    "lucide-react": "^0.468.0",
     "next": "16.4.2",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "sql.js": "^1.13.0"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/sql.js": "^1.4.9",
     "eslint": "^9",
     "eslint-config-next": "16.4.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4",
+    "@playwright/test": "^1.56.0",
+    "sharp": "^0.34.5"
   }
 }
