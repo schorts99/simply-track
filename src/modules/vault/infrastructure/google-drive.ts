@@ -250,11 +250,15 @@ export class GoogleDriveSync {
             await this.cleanup();
             return "current";
           }
-          if (remote?.id === state.id && base?.bookId === state.id && base.localRevision === state.revision) {
-            return { file, bytes: remoteBytes, expectedRevision: state.revision };
+          // Drive versions include metadata changes; compare the decrypted baseline before declaring a conflict.
+          const remoteUnchanged = remote?.id === state.id && base?.bookId === state.id && remote.revision === base.localRevision;
+          if (!remoteUnchanged) {
+            if (remote?.id === state.id && base?.bookId === state.id && base.localRevision === state.revision) {
+              return { file, bytes: remoteBytes, expectedRevision: state.revision };
+            }
+            this.conflict = { file, bytes: remoteBytes };
+            return "conflict";
           }
-          this.conflict = { file, bytes: remoteBytes };
-          return "conflict";
         }
         const created = await this.createSnapshot(bytes, [file.id]);
         await this.saveBase(created, state.revision, state.id);

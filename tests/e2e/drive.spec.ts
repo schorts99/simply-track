@@ -40,24 +40,32 @@ test("Drive import stays connected, manual sync does not duplicate, and deletion
   const newerBytes = await readFile(newerPath);
 
   const snapshots = [{ id: "remote", name: "simply-track.vault", version: "1", createdTime: new Date().toISOString(), appProperties: {} as Record<string, string> }];
+  const contents = new Map([["remote", bytes], ["remote-new", newerBytes], ["another-device", bytes]]);
   let uploads = 0;
   let lists = 0;
   let slow = false;
   await page.route("https://www.googleapis.com/**", async (route) => {
     const request = route.request();
     if (request.url().includes("alt=media")) {
-      await route.fulfill({ contentType: "application/octet-stream", body: request.url().includes("/remote-new?") ? newerBytes : bytes });
+      const id = new URL(request.url()).pathname.split("/").at(-1)!;
+      const body = contents.get(id);
+      if (!body) throw new Error(`Missing test snapshot: ${id}`);
+      await route.fulfill({ contentType: "application/octet-stream", body });
     } else if (request.method() === "POST") {
       expect(request.headers()["content-type"]).toContain("multipart/related");
       const metadata = JSON.parse(request.postDataBuffer()!.toString().match(/\r\n\r\n([\s\S]*?)\r\n--/)![1]);
       uploads++;
       const file = { id: `snapshot-${uploads}`, name: metadata.name, version: "1", createdTime: new Date().toISOString(), appProperties: metadata.appProperties };
+      const payload = request.postDataBuffer()!;
+      const header = Buffer.from("Content-Type: application/octet-stream\r\n\r\n");
+      contents.set(file.id, Buffer.from(payload.subarray(payload.indexOf(header) + header.length, payload.lastIndexOf("\r\n--"))));
       snapshots.push(file);
       await route.fulfill({ json: file });
     } else {
       lists++;
       if (slow) await new Promise((resolve) => setTimeout(resolve, 2400));
-      await route.fulfill({ json: { files: snapshots } });
+      // Drive may advance metadata versions without changing the uploaded vault.
+      await route.fulfill({ json: { files: snapshots.map((file) => ({ ...file, version: file.id.startsWith("snapshot-") ? "2" : file.version })) } });
     }
   });
   await page.getByRole("button", { name: "Connect Google Drive", exact: true }).click();

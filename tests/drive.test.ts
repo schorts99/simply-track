@@ -169,6 +169,34 @@ describe("one shared Drive vault", () => {
     expect(f.storage.get("drive-base")).toMatchObject({ fileId: "remote", localRevision: "remote-edit" });
   });
 
+  it("uploads edits after opening Drive when only Google's file version has changed", async () => {
+    const f = await fixture();
+    f.vault.isOpen.mockReturnValueOnce(false);
+    f.setFiles([file("remote")]);
+    expect(await f.drive.sync()).toBe("conflict");
+    await f.drive.useDrive("password");
+    f.setLocal({ id: "book", revision: "first-transaction" });
+    f.setFiles([{ ...file("remote"), version: "2" }]);
+    expect(await f.drive.sync()).toBe("uploaded");
+    expect(f.drive.conflict).toBeUndefined();
+    expect(f.storage.get("drive-base")).toMatchObject({ fileId: "created-1", localRevision: "first-transaction" });
+
+    f.remote.revision = "first-transaction";
+    f.setLocal({ id: "book", revision: "second-transaction" });
+    f.setFiles([{ ...file("created-1"), version: "2" }]);
+    expect(await f.drive.sync()).toBe("uploaded");
+    expect(f.drive.conflict).toBeUndefined();
+    expect(f.uploads()).toBe(2);
+  });
+
+  it("uploads local edits when a new snapshot contains the unchanged synced revision", async () => {
+    const f = await fixture();
+    f.remote.revision = "old";
+    f.setFiles([file("duplicate")]);
+    expect(await f.drive.sync()).toBe("uploaded");
+    expect(f.drive.conflict).toBeUndefined();
+  });
+
   it("automatically restores newer remote data when there are no local edits", async () => {
     const f = await fixture();
     f.setLocal({ id: "book", revision: "old" });

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.3] - 2026-10-23
+
+### Fixed
+
+- Avoid repeated restore-or-replace prompts after editing a synced vault when Drive's file version changes but its decrypted data still matches the last synced revision.
+
 ## [1.1.2] - 2026-10-23
 
 ### Fixed

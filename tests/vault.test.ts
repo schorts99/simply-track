@@ -2,11 +2,93 @@ import { describe, expect, it, vi } from "vitest";
 import { InMemoryEventBus } from "@schorts/shared-kernel/event-bus";
 import { FinanceService } from "../src/modules/finance/application/finance-service";
 import { emptyState } from "../src/modules/finance/domain/finance";
-import { base64, decrypt, deriveKey, encrypt, parseEnvelope, unbase64 } from "../src/modules/vault/infrastructure/crypto";
+import { base64, buffer, decrypt, deriveKey, encrypt, parseEnvelope, unbase64 } from "../src/modules/vault/infrastructure/crypto";
 import { loadSqlite, SqliteFinanceRepository } from "../src/modules/finance/infrastructure/sqlite-repository";
 import { Vault } from "../src/composition/vault";
+import { GoogleDriveSync } from "../src/modules/vault/infrastructure/google-drive";
 
 describe("encrypted SQLite persistence", () => {
+  it("converges two devices after replacing Drive, without prompting unchanged devices again", async () => {
+    const password = "a safe two device sync password";
+    const sql = await loadSqlite();
+    const db = SqliteFinanceRepository.create(sql, emptyState());
+    const salt = base64(crypto.getRandomValues(new Uint8Array(16)));
+    const key = await deriveKey(password, unbase64(salt));
+    const original = await encrypt(db.export(), key, salt);
+    db.close();
+    const devices = [new Vault(), new Vault()];
+    const snapshots: { id: string; name: string; version: string; createdTime: string; bytes: Uint8Array }[] = [];
+    vi.stubGlobal("sessionStorage", { setItem: vi.fn(), removeItem: vi.fn() });
+    vi.stubEnv("NEXT_PUBLIC_GOOGLE_CLIENT_ID", "test-client");
+    vi.stubGlobal("window", { google: { accounts: { oauth2: {
+      initTokenClient: ({ callback }: { callback: (response: unknown) => void }) => ({
+        requestAccessToken: () => callback({ access_token: "test-token", expires_in: 3600 }),
+      }),
+    } } } });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        const bytes = new Uint8Array(await (init.body as Blob).arrayBuffer());
+        const text = new TextDecoder().decode(bytes);
+        const header = "Content-Type: application/octet-stream\r\n\r\n";
+        const start = text.indexOf(header) + header.length;
+        const end = text.lastIndexOf("\r\n--");
+        // The encrypted envelope is ASCII JSON, so string and byte offsets match.
+        const snapshot = {
+          id: `snapshot-${snapshots.length + 1}`, name: "simply-track.vault", version: "1",
+          createdTime: new Date(Date.UTC(2026, 9, 23, 12, 0, snapshots.length)).toISOString(),
+          bytes: bytes.slice(start, end),
+        };
+        snapshots.push(snapshot);
+        return Response.json(snapshot);
+      }
+      if (url.includes("alt=media")) {
+        const id = new URL(url).pathname.split("/").at(-1);
+        const snapshot = snapshots.find((file) => file.id === id);
+        if (!snapshot) throw new Error("Test snapshot not found.");
+        return new Response(buffer(snapshot.bytes));
+      }
+      return Response.json({ files: snapshots.map((snapshot) => ({ ...snapshot, version: "2" })) });
+    });
+    try {
+      for (const vault of devices) {
+        let stored: Uint8Array = original;
+        const metadata = new Map<string, unknown>();
+        vi.spyOn(vault, "initialize").mockResolvedValue();
+        vi.spyOn(vault.store, "readVault").mockImplementation(async () => stored);
+        vi.spyOn(vault.store, "writeVault").mockImplementation(async (bytes) => { stored = bytes; });
+        vi.spyOn(vault.store, "get").mockImplementation(async <T>(name: string) => metadata.get(name) as T | undefined);
+        vi.spyOn(vault.store, "set").mockImplementation(async (name, value) => { metadata.set(name, value); });
+        await vault.replace(original, password);
+      }
+      const [first, second] = devices;
+      const a = new GoogleDriveSync(first);
+      const b = new GoogleDriveSync(second);
+      await a.connect(); await b.connect();
+      expect(await a.sync()).toBe("uploaded");
+      expect(await b.sync()).toBe("current");
+
+      await first.execute({ type: "goal.save", data: { id: crypto.randomUUID(), name: "First device", saved: 0, target: 10000, date: "2027-01-01" } });
+      expect(await a.sync()).toBe("uploaded");
+      await second.execute({ type: "goal.save", data: { id: crypto.randomUUID(), name: "Second device", saved: 0, target: 20000, date: "2027-01-01" } });
+      expect(await b.sync()).toBe("conflict");
+      await b.useDevice();
+
+      expect(await a.sync()).toBe("restored");
+      expect(await first.read()).toEqual(await second.read());
+      expect(await a.sync()).toBe("current");
+      expect(await b.sync()).toBe("current");
+      await first.execute({ type: "goal.save", data: { id: crypto.randomUUID(), name: "Next edit", saved: 0, target: 30000, date: "2027-01-01" } });
+      expect(await a.sync()).toBe("uploaded");
+      expect(await b.sync()).toBe("restored");
+      expect(await first.read()).toEqual(await second.read());
+      expect(a.conflict).toBeUndefined();
+      expect(b.conflict).toBeUndefined();
+    } finally {
+      for (const vault of devices) await vault.logout();
+      vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs();
+    }
+  });
   it("restores same-key sync data only if the device has not changed, keeping its unlock session", async () => {
     const sql = await loadSqlite();
     const original = emptyState();
