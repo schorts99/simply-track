@@ -7,12 +7,15 @@ import { useState, type FormEvent } from "react";
 import { defaultSettings, localDate, money, type BudgetData, type Command, type GoalData, type ScenarioData, type Settings, type TransactionData } from "../domain/finance";
 import { amountInput } from "../../../shared/presentation/primitives";
 import { catalogName, PreferencesForm } from "./preferences-form";
+import type { DebtData, DebtPayment, PaymentInterval } from "../domain/debts";
 
 export type Editor =
   | { kind: "transaction"; data?: TransactionData }
   | { kind: "budget"; data?: BudgetData }
   | { kind: "goal"; data?: GoalData }
   | { kind: "scenario"; data?: ScenarioData }
+  | { kind: "debt"; data?: DebtData }
+  | { kind: "repayment"; debtId: string; data?: DebtPayment }
   | { kind: "preferences"; data: Settings };
 export function FinanceForm({ editor, onSave, busy, settings = defaultSettings(), month }: { editor: Editor; onSave: (command: Command) => Promise<void>; busy: boolean; settings?: Settings; month?: string }) {
   const { t, language } = useI18n();
@@ -35,6 +38,8 @@ export function FinanceForm({ editor, onSave, busy, settings = defaultSettings()
         case "budget": command = { type: "budget.save", data: { id, category: str("category"), limit: money(str("limit")) } }; break;
         case "goal": command = { type: "goal.save", data: { id, name: str("name"), target: money(str("target")), saved: money(str("saved")), date: str("date") } }; break;
         case "scenario": command = { type: "scenario.save", data: { id, name: str("name"), incomeChange: money(str("incomeChange")), expensePercent: Number(str("expensePercent")) } }; break;
+        case "debt": command = { type: "debt.save", data: { id, name: str("name"), direction: str("direction") as DebtData["direction"], principal: money(str("principal")), annualRate: money(str("annualRate")), startDate: str("startDate"), firstDueDate: str("firstDueDate"), installments: Number(str("installments")), interval: str("interval") as PaymentInterval, payments: editor.data?.payments ?? [] } }; break;
+        case "repayment": command = { type: "debt.payment.save", debtId: editor.debtId, data: { id, amount: money(str("amount")), date: str("date") } }; break;
         case "preferences": return;
       }
       await onSave(command);
@@ -74,6 +79,18 @@ export function FinanceForm({ editor, onSave, busy, settings = defaultSettings()
       {cashField("incomeChange", "Monthly income change (+ or -)", editor.data?.incomeChange, true)}
       <label>{t("Expense change (%)")}<input name="expensePercent" type="number" step="0.1" min="-100" max="1000" required defaultValue={editor.data?.expensePercent ?? -10} /></label>
       <p className="help">{t("Applied to all projected expenses. Scenarios never change actual transactions.")}</p>
+    </>}
+    {editor.kind === "debt" && <>
+      <label>{t("Debt or loan name")}<input name="name" required maxLength={120} defaultValue={editor.data?.name} autoFocus /></label>
+      <label>{t("Direction")}<select name="direction" defaultValue={editor.data?.direction ?? "owed"}><option value="owed">{t("I owe money")}</option><option value="lent">{t("I lent money")}</option></select></label>
+      <div className="form-grid">{cashField("principal", "Principal", editor.data?.principal)}<label>{t("Annual simple interest (%)")}<input name="annualRate" type="number" step="0.01" min="0" max="1000" required defaultValue={amountInput(editor.data?.annualRate ?? 0)} /></label></div>
+      <div className="form-grid"><label>{t("Start date")}<input name="startDate" type="date" required defaultValue={editor.data?.startDate ?? today} /></label><label>{t("First due date")}<input name="firstDueDate" type="date" required defaultValue={editor.data?.firstDueDate ?? today} /></label></div>
+      <div className="form-grid"><label>{t("Number of payments")}<input name="installments" type="number" min="1" max="600" step="1" required defaultValue={editor.data?.installments ?? 1} /></label><label>{t("Payment interval")}<select name="interval" defaultValue={editor.data?.interval ?? "monthly"}><option value="weekly">{t("Weekly")}</option><option value="biweekly">{t("Every two weeks")}</option><option value="monthly">{t("Monthly")}</option><option value="quarterly">{t("Quarterly")}</option><option value="yearly">{t("Yearly")}</option></select></label></div>
+      <p className="help">{t("Interest is calculated on the original principal from the start date through the final due date, using actual days and a 365-day year. Payments are divided as evenly as possible. Repayments do not create transactions or change forecasts.")}</p>
+    </>}
+    {editor.kind === "repayment" && <>
+      <div className="form-grid">{cashField("amount", "Amount", editor.data?.amount)}<label>{t("Date")}<input name="date" type="date" required defaultValue={editor.data?.date ?? today} /></label></div>
+      <p className="help">{t("Repayments are tracked separately and do not create transactions.")}</p>
     </>}
     {error && <p role="alert" className="error">{translateError(language, error)}</p>}
     <div className="form-submit"><button className="button primary" disabled={busy || submitting}>{busy || submitting ? t("Saving...") : t("Save changes")}</button></div>

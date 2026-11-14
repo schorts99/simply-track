@@ -26,6 +26,7 @@ Open `http://localhost:3000`. Production deployments must use HTTPS. No finance 
 
 - Monthly overview, quick expenses, transaction creation/editing/deletion and search.
 - Category budgets, savings goals, income-based 50/30/20 analysis.
+- Debts and loans with fixed-term simple interest, installment schedules and separate repayment tracking.
 - Configurable 1–24 month estimates and saved what-if scenarios, separate from actual records.
 - Encrypted SQLite vault, export/import, remembered tab sessions, explicit logout.
 - Optional encrypted Google Drive sync with conflict resolution.
@@ -59,6 +60,8 @@ On first use, the app selects English or Spanish from the device's ordered langu
 Translations and interpolation live in `src/shared/i18n/`, with no dependency on finance storage. The document's `lang` attribute follows the selected language. Categories and payment methods retain their stable stored identifiers; user-entered descriptions, custom catalog names, notes, goal names and scenario names are never translated. Browser-owned date/number input controls and native validation prompts follow the browser/OS's own localization support.
 
 New vaults start empty. Amounts use integer hundredths, with at most two decimal input places, including currencies conventionally displayed without fractional units. Changing currency relabels amounts; it does not convert them. Savings-goal allocations are informational and do not move money. Monthly recurring flags inform forecasts, not automatic transaction creation. Forecast assumptions are shown in the app; recurring records are summed, not deduplicated into subscriptions.
+
+Debts and loans live under **Budgets & goals**. Enter the original principal, annual simple-interest rate, start date, first due date, number of payments and interval. Interest is fixed on the original principal for the actual number of days through the final due date, using a 365-day year and rounding to the nearest cent; repayments do not reduce that interest. Payments are divided as evenly as possible, with extra cents assigned to earlier installments. Monthly, quarterly and yearly dates clamp to the last day of shorter months. Overdue amounts compare installments due before today with repayments dated through today. Repayments are recorded separately and do not create transactions, change cash balances or affect forecasts. Editing terms cannot reduce the total below recorded repayments. Older vaults load with an empty debt list.
 
 ## Privacy and terms
 

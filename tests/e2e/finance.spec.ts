@@ -1,5 +1,41 @@
 import { expect, test } from "@playwright/test";
 
+test("debts and loans persist with schedules and separate repayments", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.getByLabel("Vault password", { exact: true }).fill("a safe test password 123");
+  await page.getByLabel("Confirm password", { exact: true }).fill("a safe test password 123");
+  await page.getByRole("button", { name: "Create my private vault" }).click();
+  const nav = page.getByRole("navigation", { name: testInfo.project.name === "mobile" ? "Mobile navigation" : "Main navigation" });
+  await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Plan" : "Budgets & goals", exact: true }).click();
+  await page.getByRole("button", { name: "Add debt or loan" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Debt or loan name").fill("Family loan");
+  await dialog.getByLabel("Principal").fill("600");
+  await dialog.getByLabel("Annual simple interest (%)").fill("0");
+  await dialog.getByLabel("Start date").fill("2026-01-01");
+  await dialog.getByLabel("First due date").fill("2026-02-01");
+  await dialog.getByLabel("Number of payments").fill("6");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  const card = page.locator("article").filter({ has: page.getByRole("heading", { name: "Family loan" }) });
+  await expect(card).toContainText("$600.00");
+  await card.getByText("Payment schedule").click();
+  await expect(card.getByRole("row")).toHaveCount(7);
+  await card.getByRole("button", { name: "Record repayment" }).click();
+  await dialog.getByLabel("Amount").fill("100");
+  await dialog.getByLabel("Date", { exact: true }).fill("2026-02-01");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await expect(card).toContainText("$500.00");
+  await page.reload();
+  await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Plan" : "Budgets & goals", exact: true }).click();
+  await expect(card).toContainText("$500.00");
+  await card.getByText("Repayment history").click();
+  await card.getByRole("button", { name: /Delete repayment on/ }).click();
+  await dialog.getByRole("button", { name: "Remove record" }).click();
+  await expect(card).toContainText("$600.00");
+  await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Activity" : "Transactions", exact: true }).click();
+  await expect(page.getByText("Nothing here yet")).toBeVisible();
+});
+
 test("encrypted finance workflows persist, lock, import and work offline", async ({ page, context }, testInfo) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

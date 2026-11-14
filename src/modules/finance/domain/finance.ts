@@ -3,6 +3,7 @@ import { DomainEvent } from "@schorts/shared-kernel/domain-events";
 import { Entity } from "@schorts/shared-kernel/entities";
 import { UUIDValue } from "@schorts/shared-kernel/value-objects";
 import { defaultSettings, restoreSettings, validateSettings, type Settings } from "./settings";
+import { validateDebt, type DebtData, type DebtPayment } from "./debts";
 export { expenseCategories, incomeCategories, defaultSettings } from "./settings";
 export type { Settings } from "./settings";
 
@@ -29,6 +30,7 @@ export interface FinanceState {
   budgets: BudgetData[];
   goals: GoalData[];
   scenarios: ScenarioData[];
+  debts: DebtData[];
   settings: Settings;
 }
 export type Command =
@@ -40,6 +42,10 @@ export type Command =
   | { type: "goal.delete"; id: string }
   | { type: "scenario.save"; data: ScenarioData }
   | { type: "scenario.delete"; id: string }
+  | { type: "debt.save"; data: DebtData }
+  | { type: "debt.delete"; id: string }
+  | { type: "debt.payment.save"; debtId: string; data: DebtPayment }
+  | { type: "debt.payment.delete"; debtId: string; id: string }
   | { type: "settings.save"; data: Settings };
 
 export class FinanceId extends UUIDValue { readonly attributeName = "financeId"; }
@@ -90,7 +96,7 @@ export class Transaction extends Entity<FinanceId, TransactionData> {
 export function emptyState(): FinanceState {
   return {
     id: crypto.randomUUID(), revision: crypto.randomUUID(), version: 0,
-    transactions: [], budgets: [], goals: [], scenarios: [],
+    transactions: [], budgets: [], goals: [], scenarios: [], debts: [],
     settings: defaultSettings(),
   };
 }
@@ -100,6 +106,7 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
   constructor(state: FinanceState) {
     super(new FinanceId(state.id), state.version);
     this.state = structuredClone(state);
+    if (this.state.debts === undefined) this.state.debts = [];
     this.state.settings = restoreSettings(state.settings);
     this.validateInvariants();
   }
@@ -125,7 +132,8 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
       validateId(v.id); text(v.name, "Scenario name"); validMoney(v.incomeChange, true);
       if (!Number.isFinite(v.expensePercent) || v.expensePercent < -100 || v.expensePercent > 1000) throw new Error("Expense adjustment must be between -100% and 1000%.");
     });
-    for (const collection of [s.transactions, s.budgets, s.goals, s.scenarios]) {
+    s.debts.forEach((debt) => validateDebt(debt, validateId, validMoney, validDate));
+    for (const collection of [s.transactions, s.budgets, s.goals, s.scenarios, s.debts]) {
       if (new Set(collection.map((v) => v.id)).size !== collection.length) throw new Error("Duplicate record identifiers.");
     }
   }
@@ -155,6 +163,18 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
       case "goal.delete": this.state.goals = remove(this.state.goals, command.id); break;
       case "scenario.save": this.state.scenarios = upsert(this.state.scenarios, command.data); break;
       case "scenario.delete": this.state.scenarios = remove(this.state.scenarios, command.id); break;
+      case "debt.save": this.state.debts = upsert(this.state.debts, { ...command.data, name: command.data.name.trim() }); break;
+      case "debt.delete": this.state.debts = remove(this.state.debts, command.id); break;
+      case "debt.payment.save": {
+        const debt = this.state.debts.find((item) => item.id === command.debtId);
+        if (!debt) throw new Error("The record no longer exists.");
+        debt.payments = upsert(debt.payments, command.data); break;
+      }
+      case "debt.payment.delete": {
+        const debt = this.state.debts.find((item) => item.id === command.debtId);
+        if (!debt) throw new Error("The record no longer exists.");
+        debt.payments = remove(debt.payments, command.id); break;
+      }
       case "settings.save": this.state.settings = structuredClone(command.data); break;
       }
       this.validateInvariants();

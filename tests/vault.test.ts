@@ -164,6 +164,26 @@ describe("encrypted SQLite persistence", () => {
     expect(SqliteFinanceRepository.validate(reopened).transactions).toEqual(state.transactions);
     repo.close(); reopened.close();
   });
+  it("opens legacy books without debts and persists loans and repayments in the encrypted vault", async () => {
+    const sql = await loadSqlite();
+    const state = emptyState();
+    const db = SqliteFinanceRepository.create(sql, state);
+    const legacy = { ...state, debts: undefined };
+    db.run("UPDATE book SET data = ? WHERE id = 1", [JSON.stringify(legacy)]);
+    expect(SqliteFinanceRepository.validate(db)).toMatchObject({ revision: state.revision, debts: [] });
+    const repo = new SqliteFinanceRepository(db, async () => {});
+    const service = new FinanceService(repo, new InMemoryEventBus(undefined, { enableLogging: false }));
+    const debt = { id: crypto.randomUUID(), name: "Loan", direction: "lent" as const, principal: 10000, annualRate: 500, startDate: "2026-01-01", firstDueDate: "2027-01-01", installments: 1, interval: "monthly" as const, payments: [] };
+    const payment = { id: crypto.randomUUID(), amount: 1000, date: "2026-06-01" };
+    await service.execute({ type: "debt.save", data: debt });
+    await service.execute({ type: "debt.payment.save", debtId: debt.id, data: payment });
+    const salt = base64(crypto.getRandomValues(new Uint8Array(16)));
+    const key = await deriveKey("a safe migration password", unbase64(salt));
+    const sealed = await encrypt(repo.export(), key, salt);
+    const reopened = new sql.Database(await decrypt(parseEnvelope(sealed), key));
+    expect(SqliteFinanceRepository.validate(reopened).debts).toEqual([{ ...debt, payments: [payment] }]);
+    repo.close(); reopened.close();
+  });
   it("round-trips an actual SQLite database; rejects wrong passwords and tampering", async () => {
     const sql = await loadSqlite();
     const db = SqliteFinanceRepository.create(sql, emptyState());

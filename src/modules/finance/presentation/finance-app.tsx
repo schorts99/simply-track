@@ -59,7 +59,7 @@ export default function FinanceApp() {
   const [syncing, setSyncing] = useState(false);
   const [reconnectNeeded, setReconnectNeeded] = useState(false);
   const [importBytes, setImportBytes] = useState<Uint8Array | null>(null);
-  const [deletion, setDeletion] = useState<{ kind: "transaction" | "budget" | "goal" | "scenario"; id: string } | null>(null);
+  const [deletion, setDeletion] = useState<{ kind: "transaction" | "budget" | "goal" | "scenario" | "debt" | "repayment"; id: string; debtId?: string } | null>(null);
   const [install, setInstall] = useState<InstallPrompt | null>(null);
   const [installed, setInstalled] = useState(false);
   const [storage, setStorage] = useState("");
@@ -274,8 +274,10 @@ export default function FinanceApp() {
     budget: { new: "New budget", edit: "Edit budget" },
     goal: { new: "New goal", edit: "Edit goal" },
     scenario: { new: "New scenario", edit: "Edit scenario" },
+    debt: { new: "New debt or loan", edit: "Edit debt or loan" },
+    repayment: { new: "Record repayment", edit: "Edit repayment" },
   } as const;
-  const viewProps = state ? { state, month, edit: setEditor, remove: (kind: "transaction" | "budget" | "goal" | "scenario", id: string) => setDeletion({ kind, id }) } : null;
+  const viewProps = state ? { state, month, edit: setEditor, remove: (kind: "transaction" | "budget" | "goal" | "scenario" | "debt" | "repayment", id: string, debtId?: string) => setDeletion({ kind, id, debtId }) } : null;
   return <>
     <input ref={importInput} className="sr-only" type="file" accept=".vault,application/octet-stream,application/json" aria-label={t("Import encrypted vault file")} onChange={(event) => {
       const file = event.target.files?.[0];
@@ -319,7 +321,7 @@ export default function FinanceApp() {
     </div>}
     {notice && <div className="toast"><span role="status"><Check size={17} />{t(notice)}</span><button type="button" className="icon-button" aria-label={t("Dismiss notification")} onClick={() => setNotice("")}><X size={16} /></button></div>}
     {editor && state && <Modal title={t(editor.kind === "preferences" ? "Your preferences" : editorTitles[editor.kind][editor.data ? "edit" : "new"])} error={error} onClose={() => setEditor(null)}><FinanceForm editor={editor} settings={state.settings} month={month} busy={busy} onSave={save} /></Modal>}
-    {deletion && <Modal title={t("Remove this record?")} error={error} onClose={() => setDeletion(null)}><p>{t("This permanently removes the record from your vault. Other records won't be changed.")}</p><div className="dialog-actions"><button className="button secondary" onClick={() => setDeletion(null)}>{t("Keep it")}</button><button className="button danger" disabled={busy} onClick={() => void perform(async () => { await vault.execute({ type: `${deletion.kind}.delete`, id: deletion.id }); setDeletion(null); }, "Record removed")}>{t("Remove record")}</button></div></Modal>}
+    {deletion && <Modal title={t("Remove this record?")} error={error} onClose={() => setDeletion(null)}><p>{t(deletion.kind === "debt" ? "This permanently removes the debt or loan and its repayment history from your vault." : "This permanently removes the record from your vault. Other records won't be changed.")}</p><div className="dialog-actions"><button className="button secondary" onClick={() => setDeletion(null)}>{t("Keep it")}</button><button className="button danger" disabled={busy} onClick={() => void perform(async () => { if (deletion.kind === "repayment") { if (!deletion.debtId) throw new Error("The record no longer exists."); await vault.execute({ type: "debt.payment.delete", debtId: deletion.debtId, id: deletion.id }); } else await vault.execute({ type: `${deletion.kind}.delete`, id: deletion.id }); setDeletion(null); }, "Record removed")}>{t("Remove record")}</button></div></Modal>}
     {settings && state && <Modal title={t("Your space, your settings")} error={error} onClose={() => { setError(""); setSettings(false); }}>
       <div className="settings-stack"><section className="display-preferences"><LanguageSelect /><ThemeSelect /></section><section><h3>{state.settings.profileName || t("Preferences")}</h3>{state.settings.workspaceName && <p>{state.settings.workspaceName}</p>}<p>{t("Customize your profile, categories, payment methods, quick actions and forecast assumptions.")}</p><button className="button secondary" onClick={() => { setSettings(false); setEditor({ kind: "preferences", data: state.settings }); }}><Settings2 size={16} />{t("Edit preferences")}</button></section>
         <section><h3><LockKeyhole size={17} /> {t("Encrypted device vault")}</h3><p>{t("Your data is encrypted on this device. Export a backup before clearing browser data.")}</p><details className="settings-details"><summary>{t("Storage & security details")}</summary><p>{t("SQLite, encrypted with AES-256-GCM. Stored")} {storage === "opfs" ? t("as simply-track.vault in this browser's private device filesystem") : t("in this browser's device storage (IndexedDB fallback)")}{t(". Clearing site data removes it. Keep a backup.")}</p><p className="help">{t("This tab stays unlocked across reloads until you log out. A non-extractable encryption key is kept in browser storage for that session. Anyone with access to this unlocked browser session can view your data.")}</p></details><div className="wrap-actions"><button className="button secondary" disabled={busy} onClick={() => void perform(async () => downloadVault(await vault.export()), "Encrypted backup downloaded")}><Download size={16} />{t("Export backup")}</button><button className="button secondary" disabled={busy} onClick={() => importInput.current?.click()}><Upload size={16} />{t("Import backup")}</button></div></section>

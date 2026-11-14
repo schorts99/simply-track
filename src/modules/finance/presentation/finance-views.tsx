@@ -8,11 +8,12 @@ import { defaultSettings, forecast, localDate, monthSummary, type FinanceState, 
 import { Empty, formatMoney, Progress } from "../../../shared/presentation/primitives";
 import type { Editor } from "./finance-forms";
 import { catalogName } from "./preferences-form";
+import { debtSchedule, debtTotal } from "../domain/debts";
 
 export type Tab = "overview" | "transactions" | "planning" | "forecast" | "scenarios";
 interface ViewProps {
   state: FinanceState; month: string; edit: (editor: Editor) => void;
-  remove: (kind: "transaction" | "budget" | "goal" | "scenario", id: string) => void;
+  remove: (kind: "transaction" | "budget" | "goal" | "scenario" | "debt" | "repayment", id: string, debtId?: string) => void;
 }
 export function Transactions({ entries, currency, settings, edit, remove }: { entries: TransactionData[]; currency: string; settings: Settings; edit: ViewProps["edit"]; remove: ViewProps["remove"] }) {
   const { t, language } = useI18n();
@@ -92,6 +93,27 @@ export function PlanningView({ state, month, edit, remove }: ViewProps) {
     })}</div> : <section className="card"><Empty title={t("A fresh plan")} description={t("Create your first category budget to see how this month is going.")} /></section>}
     <div className="section-heading"><div><h2>{t("Savings goals")}</h2><p>{t("Keep the bigger picture in sight.")}</p></div><button className="button secondary" onClick={() => edit({ kind: "goal" })}><Plus size={16} /> {t("Add goal")}</button></div>
     {state.goals.length ? <div className="planning-grid">{state.goals.map((g) => <article className="card planning-card" key={g.id}><div className="spread"><span className="mini-icon purple"><Target size={20} /></span><div className="inline-actions"><button className="icon-button" aria-label={t("Edit {p0}", { p0: g.name })} onClick={() => edit({ kind: "goal", data: g })}><Pencil size={15} /></button><button className="icon-button" aria-label={t("Delete {p0}", { p0: g.name })} onClick={() => remove("goal", g.id)}><Trash2 size={15} /></button></div></div><h3>{g.name}</h3><p className="large-number">{fmt(g.saved)} <small>{t("of")} {fmt(g.target)}</small></p><Progress intent="goal" label={g.name} value={g.saved / g.target * 100} /><p>{g.saved >= g.target ? t("Goal reached. You did it!") : t("Target: {p0}", { p0: new Date(`${g.date}T12:00:00`).toLocaleDateString(language) })}</p><button className="text-button" onClick={() => edit({ kind: "goal", data: g })}>{t("Update savings")} <ArrowRight size={15} /></button></article>)}</div> : <section className="card"><Empty title={t("What are you saving for?")} description={t("Turn a someday into a plan, at your own pace.")} /></section>}
+    <div className="section-heading"><div><h2>{t("Debts & loans")}</h2><p>{t("Keep track of what you owe and what others owe you.")}</p></div><button className="button secondary" onClick={() => edit({ kind: "debt" })}><Plus size={16} /> {t("Add debt or loan")}</button></div>
+    {state.debts.length ? <div className="planning-grid">{state.debts.map((debt) => {
+      const total = debtTotal(debt);
+      const paid = debt.payments.reduce((sum, payment) => sum + payment.amount, 0);
+      const schedule = debtSchedule(debt);
+      const today = localDate();
+      const due = schedule.filter((payment) => payment.date < today).reduce((sum, payment) => sum + payment.amount, 0);
+      const paidByToday = debt.payments.filter((payment) => payment.date <= today).reduce((sum, payment) => sum + payment.amount, 0);
+      const date = (value: string) => new Date(`${value}T12:00:00`).toLocaleDateString(language);
+      return <article className="card planning-card" key={debt.id}>
+        <div className="spread"><h3>{debt.name}</h3><div className="inline-actions"><button className="icon-button" aria-label={t("Edit {p0}", { p0: debt.name })} onClick={() => edit({ kind: "debt", data: debt })}><Pencil size={15} /></button><button className="icon-button" aria-label={t("Delete {p0}", { p0: debt.name })} onClick={() => remove("debt", debt.id)}><Trash2 size={15} /></button></div></div>
+        <p>{t(debt.direction === "owed" ? "I owe money" : "I lent money")} &middot; {t("Annual simple interest: {p0}%", { p0: (debt.annualRate / 100).toLocaleString(language) })}</p>
+        <p className="large-number">{fmt(total - paid)} <small>{t("remaining")}</small></p>
+        <Progress label={debt.name} value={paid / total * 100} />
+        <p>{t("{p0} repaid of {p1}", { p0: fmt(paid), p1: fmt(total) })} &middot; {t("Interest: {p0}", { p0: fmt(total - debt.principal) })}</p>
+        <p className={due > paidByToday ? "expense" : "muted"}>{paidByToday >= total ? t("Fully repaid") : due > paidByToday ? t("Overdue: {p0}", { p0: fmt(due - paidByToday) }) : t("Final due date: {p0}", { p0: date(schedule.at(-1)!.date) })}</p>
+        <button className="text-button" onClick={() => edit({ kind: "repayment", debtId: debt.id })} disabled={paid >= total}>{t("Record repayment")} <ArrowRight size={15} /></button>
+        <details className="settings-details"><summary>{t("Payment schedule")}</summary><div className="table-scroll" tabIndex={0} role="region" aria-label={t("Payment schedule")}><table><thead><tr><th scope="col">{t("Date")}</th><th scope="col">{t("Amount")}</th></tr></thead><tbody>{schedule.map((item, index) => <tr key={index}><td>{date(item.date)}</td><td>{fmt(item.amount)}</td></tr>)}</tbody></table></div></details>
+        {debt.payments.length > 0 && <details className="settings-details"><summary>{t("Repayment history")}</summary>{[...debt.payments].sort((a, b) => b.date.localeCompare(a.date)).map((payment) => <div className="spread" key={payment.id}><span>{date(payment.date)} &middot; {fmt(payment.amount)}</span><div className="inline-actions"><button className="icon-button" aria-label={t("Edit repayment on {p0}", { p0: date(payment.date) })} onClick={() => edit({ kind: "repayment", debtId: debt.id, data: payment })}><Pencil size={15} /></button><button className="icon-button" aria-label={t("Delete repayment on {p0}", { p0: date(payment.date) })} onClick={() => remove("repayment", payment.id, debt.id)}><Trash2 size={15} /></button></div></div>)}</details>}
+      </article>;
+    })}</div> : <section className="card"><Empty title={t("No debts or loans yet")} description={t("Add a debt or loan to plan payments and track repayments.")} /></section>}
     <section className="card planning-card"><h2>{t("The 50 / 30 / 20 check-in")}</h2><p>{t("A guideline, not a grade. Percentages use recorded income, not just total spending.")}</p><div className="rule-grid">{[{ name: "Needs", value: needsSpend, target: 50 }, { name: "Wants", value: totals.expense - needsSpend, target: 30 }, { name: "Unspent income", value: Math.max(0, totals.net), target: 20 }].map((item) => <div key={item.name}><strong>{t(item.name)}</strong><p className="large-number">{totals.income ? `${Math.round(item.value / totals.income * 100)}%` : "--"}</p><span className="muted">{t("Guideline:")} {item.target}% &middot; {fmt(item.value)}</span></div>)}</div><p className="help">{t("Unspent income is not necessarily savings. Record income to calculate these percentages.")}</p></section>
   </>;
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FinanceBook, emptyState, forecast, localDate, money, monthSummary, type TransactionData } from "../src/modules/finance/domain/finance";
+import { debtSchedule, debtTotal, type DebtData } from "../src/modules/finance/domain/debts";
 
 function transaction(overrides: Partial<TransactionData> = {}): TransactionData {
   return { id: crypto.randomUUID(), title: "Lunch", amount: 1450, type: "expense", category: "Food & Dining", date: "2026-10-20", paymentMethod: "Card", notes: "", recurring: false, ...overrides };
@@ -11,6 +12,50 @@ describe("FinanceBook", () => {
     expect(() => money("1.234")).toThrow("two decimal");
     expect(() => money("Infinity")).toThrow();
     expect(() => money("1e5")).toThrow();
+  });
+
+  describe("debts and loans", () => {
+    function debt(overrides: Partial<DebtData> = {}): DebtData {
+      return { id: crypto.randomUUID(), name: "Loan", direction: "owed", principal: 100_000, annualRate: 1200, startDate: "2026-01-01", firstDueDate: "2026-02-28", installments: 6, interval: "monthly", payments: [], ...overrides };
+    }
+    it("calculates fixed simple interest and even schedules with month-end clamping", () => {
+      const loan = debt({ firstDueDate: "2026-01-31", installments: 3 });
+      expect(debtTotal(loan)).toBe(102_926);
+      expect(debtSchedule(loan)).toEqual([
+        { date: "2026-01-31", amount: 34_309 },
+        { date: "2026-02-28", amount: 34_309 },
+        { date: "2026-03-31", amount: 34_308 },
+      ]);
+      expect(debtSchedule(debt({ firstDueDate: "2028-02-29", startDate: "2028-01-01", installments: 2, interval: "yearly" }))[1].date).toBe("2029-02-28");
+      expect(debtSchedule(debt({ installments: 2, interval: "biweekly" }))[1].date).toBe("2026-03-14");
+    });
+    it("tracks repayments independently and rejects invalid edits without changing state", () => {
+      const book = new FinanceBook(emptyState());
+      const loan = debt({ installments: 1 });
+      book.execute({ type: "debt.save", data: loan });
+      const payment = { id: crypto.randomUUID(), date: "2026-02-01", amount: 50_000 };
+      book.execute({ type: "debt.payment.save", debtId: loan.id, data: payment });
+      const before = book.toPrimitives();
+      expect(before.transactions).toEqual([]);
+      expect(() => book.execute({ type: "debt.payment.save", debtId: loan.id, data: { ...payment, amount: 200_000 } })).toThrow("cannot exceed");
+      expect(() => book.execute({ type: "debt.save", data: { ...before.debts[0], principal: 1 } })).toThrow();
+      expect(book.toPrimitives()).toEqual(before);
+      book.execute({ type: "debt.payment.delete", debtId: loan.id, id: payment.id });
+      expect(book.toPrimitives().debts[0].payments).toEqual([]);
+      book.execute({ type: "debt.delete", id: loan.id });
+      expect(book.toPrimitives().debts).toEqual([]);
+    });
+    it("validates dates, rates and schedules", () => {
+      for (const invalid of [
+        debt({ firstDueDate: "2025-12-31" }),
+        debt({ annualRate: 1.5 }),
+        debt({ installments: 0 }),
+        debt({ principal: 1, installments: 2, annualRate: 0 }),
+        debt({ payments: [{ id: crypto.randomUUID(), date: "2025-12-31", amount: 1 }] }),
+      ]) {
+        expect(() => new FinanceBook(emptyState()).execute({ type: "debt.save", data: invalid })).toThrow();
+      }
+    });
   });
   it("enforces transaction invariants and emits a sequenced event", () => {
     const book = new FinanceBook(emptyState());
