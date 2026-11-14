@@ -144,6 +144,12 @@ small { font-size: 12px; }
 .page-footer > span:nth-child(2) { display: inline-flex; gap: 6px; align-items: center; }
 .transaction-filters { display: flex; flex-wrap: wrap; padding: 22px 24px; gap: 12px; align-items: center; }
 .transaction-filters input, .transaction-filters select { font-size: 14px; }.transaction-filters > span { font-size: 12px; white-space: nowrap; }.search-field { flex: 1; min-width: 160px; }
+.plan-sections { display: flex; flex-wrap: wrap; gap: 8px; }
+.plan-sections button { min-height: 44px; padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-secondary); }
+.plan-sections button.selected { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.account-transfers { padding: 16px 24px; border-top: 1px solid var(--border); }
+.account-transfers h3 { margin-bottom: 8px; }
+.csv-tools summary, .planning-card details > summary { cursor: pointer; min-height: 44px; padding: 10px 0; color: var(--accent); font-weight: 600; }
 .planning-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
 .planning-card { padding: 23px; }.planning-card > h3 { margin-top: 15px; overflow-wrap: anywhere; }.planning-card p { margin-top: 10px; font-size: 13px; }
 .planning-card .section-heading { padding: 0; }.inline-actions { display: flex; gap: 1px; }

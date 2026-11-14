@@ -69,6 +69,25 @@ describe("accounts and schedules", () => {
     expect(book.toPrimitives().transactions[0].scheduleId).toBeUndefined();
   });
 
+  it("persists skipped occurrences, prevents duplicate confirmation and permits restoration", () => {
+    const book = new FinanceBook(emptyState()), item = schedule();
+    book.execute({ type: "schedule.save", data: item });
+    book.execute({ type: "schedule.skip", id: item.id, date: item.firstDate });
+    expect(book.toPrimitives().transactions).toHaveLength(0);
+    expect(nextOccurrence(book.toPrimitives(), book.toPrimitives().schedules[0], "2024-04-01")).toBe("2024-02-29");
+    const before = book.toPrimitives();
+    expect(() => book.execute({ type: "schedule.confirm", id: item.id, date: item.firstDate, transactionId: crypto.randomUUID() })).toThrow("skipped");
+    expect(() => book.execute({ type: "schedule.skip", id: item.id, date: item.firstDate })).toThrow("skipped");
+    expect(book.toPrimitives()).toEqual(before);
+    book.execute({ type: "schedule.save", data: { ...item, title: "Updated" } });
+    const restored = new FinanceBook(JSON.parse(JSON.stringify(book.toPrimitives())) as FinanceState);
+    expect(restored.toPrimitives().schedules[0].skippedDates).toEqual([item.firstDate]);
+    restored.execute({ type: "schedule.unskip", id: item.id, date: item.firstDate });
+    expect(nextOccurrence(restored.toPrimitives(), restored.toPrimitives().schedules[0], "2024-04-01")).toBe(item.firstDate);
+    restored.execute({ type: "schedule.confirm", id: item.id, date: item.firstDate, transactionId: crypto.randomUUID() });
+    expect(() => restored.execute({ type: "schedule.skip", id: item.id, date: item.firstDate })).toThrow("already been recorded");
+  });
+
   it("does not double count linked repayments in inferred forecasts", () => {
     const book = new FinanceBook(emptyState());
     const entry = transaction({ amount: 2000, date: "2024-01-10", recurring: true });

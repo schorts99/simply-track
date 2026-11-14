@@ -52,6 +52,8 @@ export type Command =
   | { type: "schedule.save"; data: ScheduleData }
   | { type: "schedule.delete"; id: string }
   | { type: "schedule.confirm"; id: string; date: string; transactionId: string }
+  | { type: "schedule.skip"; id: string; date: string }
+  | { type: "schedule.unskip"; id: string; date: string }
   | { type: "budget.save"; data: BudgetData }
   | { type: "budget.delete"; id: string }
   | { type: "goal.save"; data: GoalData }
@@ -157,6 +159,10 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
       if (!schedule.amount) throw new Error("The amount must be greater than zero.");
       if (schedule.endDate !== undefined) { validDate(schedule.endDate); if (schedule.endDate < schedule.firstDate) throw new Error("The end date cannot be before the first date."); }
       if (!["weekly", "biweekly", "monthly", "quarterly", "yearly"].includes(schedule.interval) || typeof schedule.active !== "boolean") throw new Error("Invalid recurring schedule.");
+      if (schedule.skippedDates !== undefined) {
+        if (!Array.isArray(schedule.skippedDates) || new Set(schedule.skippedDates).size !== schedule.skippedDates.length) throw new Error("Invalid skipped occurrences.");
+        schedule.skippedDates.forEach(validDate);
+      }
       const categories = schedule.type === "expense" ? s.settings.expenseCategories : schedule.type === "income" ? s.settings.incomeCategories : [];
       if (!categories.some((item) => item.id === schedule.category) || !s.settings.paymentMethods.some((item) => item.id === schedule.paymentMethod)) throw new Error("Choose a valid category and payment method for the schedule.");
       if (schedule.accountId !== undefined) {
@@ -171,6 +177,7 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
       validDate(transaction.occurrenceDate);
       const key = `${transaction.scheduleId}:${transaction.occurrenceDate}`;
       if (occurrences.has(key)) throw new Error("This occurrence has already been recorded.");
+      if (s.schedules.find((schedule) => schedule.id === transaction.scheduleId)?.skippedDates?.includes(transaction.occurrenceDate)) throw new Error("A recorded occurrence cannot also be skipped.");
       occurrences.add(key);
     }
     s.budgets.forEach((b) => {
@@ -241,7 +248,10 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
         this.state.accounts = remove(this.state.accounts, command.id); break;
       case "transfer.save": this.state.transfers = upsert(this.state.transfers, command.data); break;
       case "transfer.delete": this.state.transfers = remove(this.state.transfers, command.id); break;
-      case "schedule.save": this.state.schedules = upsert(this.state.schedules, { ...command.data, title: command.data.title.trim() }); break;
+      case "schedule.save": {
+        const existing = this.state.schedules.find((schedule) => schedule.id === command.data.id);
+        this.state.schedules = upsert(this.state.schedules, { ...command.data, title: command.data.title.trim(), skippedDates: existing?.skippedDates }); break;
+      }
       case "schedule.delete":
         this.state.schedules = remove(this.state.schedules, command.id);
         this.state.transactions = this.state.transactions.map((transaction) => {
@@ -254,12 +264,26 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
         const schedule = this.state.schedules.find((item) => item.id === command.id);
         validDate(command.date);
         if (!schedule || !schedule.active || !isOccurrence(schedule, command.date) || command.date > localDate()) throw new Error("Choose an active occurrence that is due.");
+        if (schedule.skippedDates?.includes(command.date)) throw new Error("This occurrence has been skipped.");
         if (this.state.transactions.some((item) => item.scheduleId === schedule.id && item.occurrenceDate === command.date)) throw new Error("This occurrence has already been recorded.");
         if (this.state.transactions.some((item) => item.id === command.transactionId)) throw new Error("Duplicate record identifiers.");
         const categories = schedule.type === "expense" ? this.state.settings.expenseCategories : this.state.settings.incomeCategories;
         if (!categories.some((item) => item.id === schedule.category && item.active) || !this.state.settings.paymentMethods.some((item) => item.id === schedule.paymentMethod && item.active)) throw new Error("Choose an active category and payment method for the schedule.");
         const data: TransactionData = { id: command.transactionId, title: schedule.title, amount: schedule.amount, type: schedule.type, category: schedule.category, paymentMethod: schedule.paymentMethod, date: command.date, notes: "", recurring: false, accountId: schedule.accountId, scheduleId: schedule.id, occurrenceDate: command.date };
         this.state.transactions = upsert(this.state.transactions, new Transaction(data, this.state.settings).toPrimitives()); break;
+      }
+      case "schedule.skip": {
+        const schedule = this.state.schedules.find((item) => item.id === command.id);
+        validDate(command.date);
+        if (!schedule || !schedule.active || !isOccurrence(schedule, command.date) || command.date > localDate()) throw new Error("Choose an active occurrence that is due.");
+        if (schedule.skippedDates?.includes(command.date)) throw new Error("This occurrence has been skipped.");
+        if (this.state.transactions.some((item) => item.scheduleId === schedule.id && item.occurrenceDate === command.date)) throw new Error("This occurrence has already been recorded.");
+        schedule.skippedDates = [...(schedule.skippedDates ?? []), command.date]; break;
+      }
+      case "schedule.unskip": {
+        const schedule = this.state.schedules.find((item) => item.id === command.id);
+        if (!schedule || !schedule.skippedDates?.includes(command.date)) throw new Error("The skipped occurrence no longer exists.");
+        schedule.skippedDates = schedule.skippedDates.filter((date) => date !== command.date); break;
       }
       case "budget.save":
         if (!this.state.settings.expenseCategories.some((item) => item.id === command.data.category && (item.active || this.state.budgets.some((budget) => budget.id === command.data.id && budget.category === item.id)))) throw new Error("Choose an active category.");

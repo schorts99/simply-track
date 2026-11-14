@@ -10,8 +10,9 @@ import { localDate, type Command, type FinanceState } from "../domain/finance";
 import { getVault, downloadVault } from "../../../composition/vault";
 import { GoogleDriveSync } from "../../vault/infrastructure/google-drive";
 import { FinanceForm, type Editor } from "./finance-forms";
-import { ForecastView, newQuickTransaction, Overview, PlanningView, ScenariosView, TransactionView, type Tab } from "./finance-views";
-import { BrandMark, Modal } from "../../../shared/presentation/primitives";
+import { ForecastView, newQuickTransaction, Overview, PlanningView, ScenariosView, TransactionView, type PlanSection, type Tab } from "./finance-views";
+import { BrandMark, formatMoney, Modal } from "../../../shared/presentation/primitives";
+import { catalogName } from "./preferences-form";
 import { LegalLinks } from "../../legal/presentation/legal-page";
 
 interface InstallPrompt extends Event {
@@ -43,6 +44,9 @@ export default function FinanceApp() {
   const [bootFailed, setBootFailed] = useState(false);
   const [exists, setExists] = useState(false);
   const [tab, setTab] = useState<Tab>("overview");
+  const [planSection, setPlanSection] = useState<PlanSection>("accounts");
+  const [transactionAccount, setTransactionAccount] = useState<string | undefined>();
+  const [occurrence, setOccurrence] = useState<{ id: string; date: string } | null>(null);
   const [month, setMonth] = useState(() => localDate().slice(0, 7));
   const [editor, setEditor] = useState<Editor | null>(null);
   const [settings, setSettings] = useState(false);
@@ -252,7 +256,9 @@ export default function FinanceApp() {
     const [year, value] = month.split("-").map(Number);
     setMonth(localDate(new Date(year, value - 1 + offset, 1)).slice(0, 7));
   }
-  function navigate(next: Tab) {
+  function navigate(next: Tab, section?: PlanSection) {
+    if (next === "planning" && section) setPlanSection(section);
+    if (next === "transactions") setTransactionAccount(undefined);
     setTab(next);
     requestAnimationFrame(() => {
       window.scrollTo({ top: 0, behavior: "instant" });
@@ -266,7 +272,7 @@ export default function FinanceApp() {
     } else setNotice("Use your browser's Install app menu, or Share > Add to Home Screen on iPhone and iPad.");
   }
 
-  const errorBanner = error && !settings && !editor && !deletion && !importBytes && !conflict && <div className="alert error-alert" role="alert"><span>{translateError(language, error)}</span><button aria-label={t("Dismiss error")} className="icon-button" onClick={() => setError("")}><X size={17} /></button></div>;
+  const errorBanner = error && !settings && !editor && !deletion && !occurrence && !importBytes && !conflict && <div className="alert error-alert" role="alert"><span>{translateError(language, error)}</span><button aria-label={t("Dismiss error")} className="icon-button" onClick={() => setError("")}><X size={17} /></button></div>;
   const nav = (mobile = false) => <nav aria-label={mobile ? t("Mobile navigation") : t("Main navigation")} className={mobile ? "bottom-nav" : "main-nav"}>{tabs.map(({ id, label, short, Icon }) => <button key={id} aria-current={tab === id ? "page" : undefined} className={tab === id ? "active" : ""} onClick={() => navigate(id)}><Icon size={19} /><span>{t(mobile ? short : label)}</span>{!mobile && tab === id && <i />}</button>)}</nav>;
   const currentTabLabel = t(tabs.find((item) => item.id === tab)!.label);
   const editorTitles = {
@@ -312,9 +318,9 @@ export default function FinanceApp() {
           {reconnectNeeded && <div className="alert" role="status"><span>{t("Automatic Drive reconnection needs your help. Your changes remain saved on this device.")}</span><button className="button secondary" disabled={busy || syncing || !online} onClick={() => void perform(connectDrive)}>{t("Reconnect Google Drive")}</button></div>}
           <div className="month-toolbar"><div className="month-controls"><div className="month-picker"><button className="icon-button" aria-label={t("Previous month")} onClick={() => changeMonth(-1)}><ChevronLeft size={16} /></button><label><span className="sr-only">{t("Selected month")}</span><input type="month" required value={month} onChange={(e) => { if (/^\d{4}-(0[1-9]|1[0-2])$/.test(e.target.value)) setMonth(e.target.value); }} /></label><button className="icon-button" aria-label={t("Next month")} onClick={() => changeMonth(1)}><ChevronRight size={16} /></button></div>{month !== localDate().slice(0, 7) && <button className="text-button current-month" onClick={() => setMonth(localDate().slice(0, 7))}>{t("This month")}</button>}</div><button className="text-button sync-label" onClick={() => setSettings(true)}><span className={`status-dot ${syncStatus.includes("paused") || conflict ? "amber" : ""}`} />{t(syncStatus)}</button></div>
           <div className="view-stack">{viewProps && <>
-            {tab === "overview" && <Overview {...viewProps} navigate={navigate} confirm={(id, date) => void perform(async () => { await vault.execute({ type: "schedule.confirm", id, date, transactionId: crypto.randomUUID() }); }, "Transaction recorded")} quickAdd={(title, amount, category, paymentMethod) => void perform(async () => { await vault.execute({ type: "transaction.save", data: newQuickTransaction(title, amount, category, paymentMethod, localDate().startsWith(month) ? localDate() : `${month}-01`) }); }, "Transaction recorded")} />}
-            {tab === "transactions" && <TransactionView {...viewProps} onImport={async (entries) => { await vault.execute({ type: "transaction.import", data: entries }); setNotice("Transaction recorded"); }} />}
-            {tab === "planning" && <PlanningView {...viewProps} />}
+            {tab === "overview" && <Overview {...viewProps} navigate={navigate} review={(id, date) => { setError(""); setOccurrence({ id, date }); }} quickAdd={(title, amount, category, paymentMethod) => void perform(async () => { await vault.execute({ type: "transaction.save", data: newQuickTransaction(title, amount, category, paymentMethod, localDate().startsWith(month) ? localDate() : `${month}-01`) }); }, "Transaction recorded")} />}
+            {tab === "transactions" && <TransactionView {...viewProps} initialAccount={transactionAccount} onImport={async (entries) => { await vault.execute({ type: "transaction.import", data: entries }); setNotice("Transaction recorded"); }} />}
+            {tab === "planning" && <PlanningView {...viewProps} section={planSection} setSection={setPlanSection} openAccount={(id) => { navigate("transactions"); setTransactionAccount(id); }} unskip={(id, date) => void perform(async () => { await vault.execute({ type: "schedule.unskip", id, date }); }, "Occurrence restored")} />}
             {tab === "forecast" && <ForecastView {...viewProps} />}
             {tab === "scenarios" && <ScenariosView {...viewProps} />}
           </>}</div>
@@ -323,6 +329,12 @@ export default function FinanceApp() {
       </div>
     </div>}
     {notice && <div className="toast"><span role="status"><Check size={17} />{t(notice)}</span><button type="button" className="icon-button" aria-label={t("Dismiss notification")} onClick={() => setNotice("")}><X size={16} /></button></div>}
+    {occurrence && state && <Modal title={t("Review occurrence")} error={error} onClose={() => { setOccurrence(null); setError(""); }}>{(() => {
+      const schedule = state.schedules.find((item) => item.id === occurrence.id);
+      if (!schedule) return <p role="alert" className="error">{t("The record no longer exists.")}</p>;
+      const categories = schedule.type === "income" ? state.settings.incomeCategories : state.settings.expenseCategories;
+      return <div className="stack"><p>{t("Review this occurrence before recording it. Skipping it creates no transaction.")}</p><p><strong>{schedule.title}</strong> &middot; {t(schedule.type === "income" ? "Income" : "Expense")} &middot; {formatMoney(schedule.amount, state.settings.currency, language)}</p><p>{new Date(`${occurrence.date}T12:00:00`).toLocaleDateString(language)} &middot; {catalogName(categories, schedule.category, t)} &middot; {catalogName(state.settings.paymentMethods, schedule.paymentMethod, t)} &middot; {state.accounts.find((item) => item.id === schedule.accountId)?.name ?? t("Unassigned")}</p><div className="dialog-actions"><button className="button secondary" disabled={busy} onClick={() => void perform(async () => { await vault.execute({ type: "schedule.skip", id: occurrence.id, date: occurrence.date }); setOccurrence(null); }, "Occurrence skipped")}>{t("Skip occurrence")}</button><button className="button primary" disabled={busy} onClick={() => void perform(async () => { await vault.execute({ type: "schedule.confirm", id: occurrence.id, date: occurrence.date, transactionId: crypto.randomUUID() }); setOccurrence(null); }, "Transaction recorded")}>{t("Confirm occurrence")}</button></div></div>;
+    })()}</Modal>}
     {editor && state && <Modal title={t(editor.kind === "preferences" ? "Your preferences" : editorTitles[editor.kind][editor.data ? "edit" : "new"])} error={error} onClose={() => setEditor(null)}><FinanceForm editor={editor} settings={state.settings} state={state} month={month} busy={busy} onSave={save} /></Modal>}
     {deletion && <Modal title={t("Remove this record?")} error={error} onClose={() => setDeletion(null)}><p>{t(deletion.kind === "debt" ? "This permanently removes the debt or loan and its repayment history from your vault." : deletion.kind === "schedule" ? "This removes the schedule but keeps its recorded transactions." : "This permanently removes the record from your vault. Other records won't be changed.")}</p><div className="dialog-actions"><button className="button secondary" onClick={() => setDeletion(null)}>{t("Keep it")}</button><button className="button danger" disabled={busy} onClick={() => void perform(async () => { if (deletion.kind === "repayment") { if (!deletion.debtId) throw new Error("The record no longer exists."); await vault.execute({ type: "debt.payment.delete", debtId: deletion.debtId, id: deletion.id }); } else await vault.execute({ type: `${deletion.kind}.delete`, id: deletion.id }); setDeletion(null); }, "Record removed")}>{t("Remove record")}</button></div></Modal>}
     {settings && state && <Modal title={t("Your space, your settings")} error={error} onClose={() => { setError(""); setSettings(false); }}>

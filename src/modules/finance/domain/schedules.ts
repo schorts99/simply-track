@@ -13,6 +13,7 @@ export interface ScheduleData {
   endDate?: string;
   interval: PaymentInterval;
   active: boolean;
+  skippedDates?: string[];
 }
 
 export function isOccurrence(schedule: ScheduleData, date: string): boolean {
@@ -29,8 +30,10 @@ export function isOccurrence(schedule: ScheduleData, date: string): boolean {
 export function nextOccurrence(state: FinanceState, schedule: ScheduleData, horizon: string): string | undefined {
   if (!schedule.active || schedule.firstDate > horizon) return undefined;
   const completed = new Set(state.transactions.filter((item) => item.scheduleId === schedule.id).map((item) => item.occurrenceDate));
+  for (const date of schedule.skippedDates ?? []) completed.add(date);
   for (let index = 0; ; index++) {
     const date = dueDate(schedule.firstDate, schedule.interval, index);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined;
     if (date > horizon || (schedule.endDate && date > schedule.endDate)) return undefined;
     if (!completed.has(date)) return date;
   }
