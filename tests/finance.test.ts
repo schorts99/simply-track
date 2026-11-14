@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FinanceBook, emptyState, forecast, localDate, money, monthSummary, type TransactionData } from "../src/modules/finance/domain/finance";
-import { debtSchedule, debtTotal, type DebtData } from "../src/modules/finance/domain/debts";
+import { debtBalance, debtSchedule, debtTotal, outstandingSchedule, plannedBalance, type DebtData } from "../src/modules/finance/domain/debts";
 
 function transaction(overrides: Partial<TransactionData> = {}): TransactionData {
   return { id: crypto.randomUUID(), title: "Lunch", amount: 1450, type: "expense", category: "Food & Dining", date: "2026-10-20", paymentMethod: "Card", notes: "", recurring: false, ...overrides };
@@ -51,10 +51,74 @@ describe("FinanceBook", () => {
         debt({ annualRate: 1.5 }),
         debt({ installments: 0 }),
         debt({ principal: 1, installments: 2, annualRate: 0 }),
+        debt({ principal: 1, installments: 2, annualRate: 0, interestMode: "declining" }),
         debt({ payments: [{ id: crypto.randomUUID(), date: "2025-12-31", amount: 1 }] }),
       ]) {
         expect(() => new FinanceBook(emptyState()).execute({ type: "debt.save", data: invalid })).toThrow();
       }
+    });
+    it("accrues declining interest daily, applies interest first and continues after maturity", () => {
+      const loan = debt({ principal: 100_000, annualRate: 3650, startDate: "2026-01-01", firstDueDate: "2026-01-11", installments: 1, interestMode: "declining" });
+      expect(debtBalance(loan, "2026-01-21", [])).toBe(102_000);
+      expect(debtBalance(loan, "2026-01-21", [{ date: "2026-01-11", amount: 51_000 }])).toBe(50_500);
+      expect(debtBalance(loan, "2026-01-11", [{ date: "2026-01-11", amount: 101_000 }])).toBe(0);
+    });
+    it("capitalizes compound interest on monthly anniversaries, including month-end dates", () => {
+      const loan = debt({ principal: 100_000, annualRate: 3650, startDate: "2026-01-01", firstDueDate: "2026-03-01", installments: 1, interestMode: "compound" });
+      expect(debtBalance(loan, "2026-03-01", [])).toBe(105_987);
+      expect(debtBalance({ ...loan, startDate: "2028-01-31" }, "2028-03-31", [])).toBe(106_090);
+    });
+    it("generates regular balance-based payments and ignores zero-value projection events", () => {
+      const loan = debt({ principal: 10_001, annualRate: 0, interestMode: "declining", installments: 3, startDate: "2026-01-01", firstDueDate: "2026-02-01" });
+      const schedule = debtSchedule(loan);
+      expect(schedule.map((payment) => payment.amount)).toEqual([3334, 3334, 3333]);
+      expect(debtBalance(loan, "2026-04-01", schedule)).toBe(0);
+      const long = { ...loan, principal: 100_000, installments: 600 };
+      const longSchedule = debtSchedule(long);
+      expect(longSchedule).toHaveLength(600);
+      expect(longSchedule.every((payment) => payment.amount > 0)).toBe(true);
+      expect(longSchedule.reduce((sum, payment) => sum + payment.amount, 0)).toBe(100_000);
+      const tiny = { ...loan, principal: 1, annualRate: 3650, installments: 1 };
+      expect(debtBalance(tiny, "2027-02-05", [{ date: "2026-07-01", amount: 0 }], true)).toBe(debtBalance(tiny, "2027-02-05", [], true));
+    });
+    it("projects early payments and a custom balloon without changing recorded payments", () => {
+      const loan = debt({ principal: 100_000, annualRate: 3650, startDate: "2026-01-01", firstDueDate: "2026-01-31", installments: 1, interestMode: "declining", customSchedule: [{ date: "2026-01-31", amount: 103_000 }] });
+      const baseline = plannedBalance(loan, "2026-01-01");
+      const extra = plannedBalance(loan, "2026-01-01", { date: "2026-01-11", amount: 50_000 });
+      expect(baseline.totalPaid + baseline.balance).toBe(103_000);
+      expect(extra.totalPaid + extra.balance).toBe(102_020);
+      expect(extra.extraApplied).toBe(50_000);
+      expect(loan.payments).toEqual([]);
+      const balloon = { ...loan, annualRate: 0, customSchedule: [{ date: "2026-01-11", amount: 20_000 }, { date: "2026-01-31", amount: 30_000 }] };
+      expect(plannedBalance(balloon, "2026-01-01").balance).toBe(50_000);
+      expect(outstandingSchedule(balloon, "2026-01-01")).toEqual([{ date: "2026-01-11", amount: 20_000 }, { date: "2026-01-31", amount: 30_000 }, { date: "2026-01-31", amount: 50_000, estimated: true }]);
+      expect(outstandingSchedule(balloon, "2026-02-01").reduce((sum, item) => sum + item.amount, 0)).toBe(100_000);
+      const overScheduled = { ...balloon, customSchedule: [{ date: "2026-01-11", amount: 100_000 }, { date: "2026-01-31", amount: 100_000 }] };
+      expect(outstandingSchedule(overScheduled, "2026-01-01")).toEqual([{ date: "2026-01-11", amount: 100_000 }]);
+    });
+    it("accounts for recorded early and future payments without double-counting scheduled payments", () => {
+      const base = debt({ principal: 100_000, annualRate: 0, interestMode: "declining", startDate: "2026-01-01", firstDueDate: "2026-01-15", installments: 2, customSchedule: [{ date: "2026-01-15", amount: 30_000 }, { date: "2026-01-31", amount: 30_000 }] });
+      const early = { ...base, payments: [{ id: crypto.randomUUID(), date: "2026-01-02", amount: 10_000 }] };
+      expect(plannedBalance(early, "2026-01-03")).toMatchObject({ totalPaid: 60_000, balance: 40_000 });
+      const future = { ...base, payments: [{ id: crypto.randomUUID(), date: "2026-01-15", amount: 10_000 }] };
+      expect(plannedBalance(future, "2026-01-03")).toMatchObject({ totalPaid: 60_000, balance: 40_000 });
+      const late = { ...base, annualRate: 3650, installments: 1, customSchedule: [{ date: "2026-01-15", amount: 101_400 }], payments: [{ id: crypto.randomUUID(), date: "2026-01-16", amount: 101_500 }] };
+      expect(plannedBalance(late, "2026-01-01")).toMatchObject({ totalPaid: 101_500, balance: 0, payoffDate: "2026-01-16" });
+    });
+    it("links only matching transactions and protects links from edits, deletion and reuse", () => {
+      const book = new FinanceBook(emptyState());
+      const entry = transaction({ amount: 5000, date: "2026-02-01" });
+      const loan = debt();
+      const payment = { id: crypto.randomUUID(), date: entry.date, amount: entry.amount, transactionId: entry.id };
+      book.execute({ type: "transaction.save", data: entry });
+      book.execute({ type: "debt.save", data: loan });
+      book.execute({ type: "debt.payment.save", debtId: loan.id, data: payment });
+      expect(() => book.execute({ type: "transaction.delete", id: entry.id })).toThrow("Unlink");
+      expect(() => book.execute({ type: "transaction.save", data: { ...entry, amount: 6000 } })).toThrow("Unlink");
+      expect(() => book.execute({ type: "debt.payment.save", debtId: loan.id, data: { ...payment, id: crypto.randomUUID() } })).toThrow("only be linked");
+      book.execute({ type: "debt.payment.save", debtId: loan.id, data: { id: payment.id, date: payment.date, amount: payment.amount } });
+      book.execute({ type: "transaction.delete", id: entry.id });
+      expect(book.toPrimitives().transactions).toEqual([]);
     });
   });
   it("enforces transaction invariants and emits a sequenced event", () => {

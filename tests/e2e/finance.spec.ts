@@ -11,7 +11,7 @@ test("debts and loans persist with schedules and separate repayments", async ({ 
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Debt or loan name").fill("Family loan");
   await dialog.getByLabel("Principal").fill("600");
-  await dialog.getByLabel("Annual simple interest (%)").fill("0");
+  await dialog.getByLabel("Annual interest (%)").fill("0");
   await dialog.getByLabel("Start date").fill("2026-01-01");
   await dialog.getByLabel("First due date").fill("2026-02-01");
   await dialog.getByLabel("Number of payments").fill("6");
@@ -34,6 +34,56 @@ test("debts and loans persist with schedules and separate repayments", async ({ 
   await expect(card).toContainText("$600.00");
   await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Activity" : "Transactions", exact: true }).click();
   await expect(page.getByText("Nothing here yet")).toBeVisible();
+});
+
+test("custom loans, linked transactions and payoff estimates work together", async ({ page }, testInfo) => {
+  await page.clock.setFixedTime(new Date("2026-01-03T12:00:00"));
+  await page.goto("/");
+  await page.getByLabel("Vault password", { exact: true }).fill("a safe test password 123");
+  await page.getByLabel("Confirm password", { exact: true }).fill("a safe test password 123");
+  await page.getByRole("button", { name: "Create my private vault" }).click();
+  await page.getByRole("button", { name: "Add transaction", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Description", { exact: true }).fill("Loan payment");
+  await dialog.getByLabel("Amount", { exact: true }).fill("100");
+  await dialog.getByLabel("Date", { exact: true }).fill("2026-01-02");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  const nav = page.getByRole("navigation", { name: testInfo.project.name === "mobile" ? "Mobile navigation" : "Main navigation" });
+  await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Plan" : "Budgets & goals", exact: true }).click();
+  await page.getByRole("button", { name: "Add debt or loan" }).click();
+  await dialog.getByLabel("Debt or loan name").fill("Custom loan");
+  await dialog.getByLabel("Principal").fill("600");
+  await dialog.getByLabel("Annual interest (%)").fill("12");
+  await dialog.getByLabel("Interest method").selectOption("declining");
+  await dialog.getByLabel("Start date").fill("2026-01-01");
+  await dialog.getByLabel("Schedule type").selectOption("custom");
+  await dialog.getByLabel("Payment 1 date").fill("2026-01-15");
+  await dialog.getByLabel("Payment 1 amount").fill("200");
+  await dialog.getByRole("button", { name: "Add scheduled payment" }).click();
+  await dialog.getByLabel("Payment 2 date").fill("2026-01-31");
+  await dialog.getByLabel("Payment 2 amount").fill("300");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  const card = page.locator("article").filter({ has: page.getByRole("heading", { name: "Custom loan" }) });
+  await card.getByRole("button", { name: "Record repayment" }).click();
+  await dialog.getByLabel("Amount").fill("100");
+  await dialog.getByLabel("Date", { exact: true }).fill("2026-01-02");
+  const transactionOption = dialog.getByRole("option", { name: /Loan payment/ });
+  await dialog.getByLabel("Link existing transaction (optional)").selectOption((await transactionOption.getAttribute("value"))!);
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await card.getByText("Repayment history").click();
+  await expect(card).toContainText("Linked to Loan payment");
+  await card.getByText("Estimate an early repayment").click();
+  await card.getByLabel("Extra repayment").fill("100");
+  await card.getByRole("button", { name: "Calculate estimate" }).click();
+  await expect(card).toContainText("Estimated savings:");
+  await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Home" : "Overview", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Upcoming debt payments" })).toBeVisible();
+  await page.reload();
+  await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Plan" : "Budgets & goals", exact: true }).click();
+  await card.getByText("Repayment history").click();
+  await expect(card).toContainText("Linked to Loan payment");
+  await page.setViewportSize({ width: 320, height: 740 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test("encrypted finance workflows persist, lock, import and work offline", async ({ page, context }, testInfo) => {

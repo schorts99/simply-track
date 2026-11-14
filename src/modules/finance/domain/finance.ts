@@ -133,6 +133,16 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
       if (!Number.isFinite(v.expensePercent) || v.expensePercent < -100 || v.expensePercent > 1000) throw new Error("Expense adjustment must be between -100% and 1000%.");
     });
     s.debts.forEach((debt) => validateDebt(debt, validateId, validMoney, validDate));
+    const linkedTransactions = new Set<string>();
+    for (const debt of s.debts) for (const payment of debt.payments) {
+      if (payment.transactionId === undefined) continue;
+      const transaction = s.transactions.find((item) => item.id === payment.transactionId);
+      if (!transaction || transaction.type !== (debt.direction === "owed" ? "expense" : "income") || transaction.amount !== payment.amount || transaction.date !== payment.date) {
+        throw new Error("Linked transactions must match the repayment's date, amount and direction. Unlink the repayment before changing or deleting the transaction.");
+      }
+      if (linkedTransactions.has(transaction.id)) throw new Error("A transaction can only be linked to one repayment.");
+      linkedTransactions.add(transaction.id);
+    }
     for (const collection of [s.transactions, s.budgets, s.goals, s.scenarios, s.debts]) {
       if (new Set(collection.map((v) => v.id)).size !== collection.length) throw new Error("Duplicate record identifiers.");
     }
