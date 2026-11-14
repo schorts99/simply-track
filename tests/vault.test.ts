@@ -8,6 +8,32 @@ import { Vault } from "../src/composition/vault";
 import { GoogleDriveSync } from "../src/modules/vault/infrastructure/google-drive";
 
 describe("encrypted SQLite persistence", () => {
+  it("round trips accounts, transfers and confirmed occurrences through an encrypted snapshot", async () => {
+    const sql = await loadSqlite();
+    const state = emptyState();
+    let persisted: Uint8Array = new Uint8Array();
+    const repository = new SqliteFinanceRepository(SqliteFinanceRepository.create(sql, state), async (bytes) => { persisted = bytes; });
+    const service = new FinanceService(repository, new InMemoryEventBus());
+    const a = { id: crypto.randomUUID(), name: "Bank", openingBalance: 5000, openingDate: "2024-01-01" };
+    const b = { id: crypto.randomUUID(), name: "Savings", openingBalance: 0, openingDate: "2024-01-01" };
+    const schedule = { id: crypto.randomUUID(), title: "Rent", amount: 1000, type: "expense" as const, category: "Food & Dining", paymentMethod: "Card", accountId: a.id, firstDate: "2024-01-31", interval: "monthly" as const, active: true };
+    await service.execute({ type: "account.save", data: a });
+    await service.execute({ type: "account.save", data: b });
+    await service.execute({ type: "transfer.save", data: { id: crypto.randomUUID(), fromAccountId: a.id, toAccountId: b.id, amount: 500, date: "2024-01-31", notes: "" } });
+    await service.execute({ type: "schedule.save", data: schedule });
+    await service.execute({ type: "schedule.confirm", id: schedule.id, date: schedule.firstDate, transactionId: crypto.randomUUID() });
+    const salt = base64(crypto.getRandomValues(new Uint8Array(16)));
+    const key = await deriveKey("a safe persistence test password", unbase64(salt));
+    const encrypted = await encrypt(persisted, key, salt);
+    const reopened = new sql.Database(await decrypt(parseEnvelope(encrypted), key));
+    try {
+      const restored = SqliteFinanceRepository.validate(reopened);
+      expect(restored.accounts).toHaveLength(2);
+      expect(restored.transfers).toHaveLength(1);
+      expect(restored.schedules).toEqual([schedule]);
+      expect(restored.transactions[0]).toMatchObject({ accountId: a.id, scheduleId: schedule.id, occurrenceDate: schedule.firstDate });
+    } finally { reopened.close(); repository.close(); }
+  });
   it("converges two devices after replacing Drive, without prompting unchanged devices again", async () => {
     const password = "a safe two device sync password";
     const sql = await loadSqlite();

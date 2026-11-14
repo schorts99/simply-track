@@ -12,6 +12,7 @@ export interface Settings {
   forecastMonths: number;
   expenseBaseline: number | null;
   openingBalance: number;
+  includeDebtForecast: boolean;
   needsCategories: string[];
 }
 export const expenseCategories = ["Food & Dining", "Housing & Rent", "Utilities & Bills", "Transportation", "Groceries", "Shopping", "Entertainment", "Healthcare", "Education", "Subscriptions", "Other Expense"] as const;
@@ -28,7 +29,7 @@ export function defaultSettings(): Settings {
       { id: "groceries", title: "Groceries", amount: 5500, category: "Groceries", paymentMethod: "Card" },
       { id: "commute", title: "Commute", amount: 450, category: "Transportation", paymentMethod: "Card" },
     ],
-    forecastMonths: 6, expenseBaseline: null, openingBalance: 0,
+    forecastMonths: 6, expenseBaseline: null, openingBalance: 0, includeDebtForecast: false,
     needsCategories: ["Housing & Rent", "Utilities & Bills", "Transportation", "Groceries", "Healthcare"],
   };
 }
@@ -44,6 +45,7 @@ export function validateSettings(settings: Settings) {
   if (!amount(settings.incomeBaseline) || !amount(settings.openingBalance, true) || (settings.expenseBaseline !== null && !amount(settings.expenseBaseline))) throw new Error("Amount must be a valid monetary value within the supported range.");
   if (typeof settings.profileName !== "string" || settings.profileName.length > 80 || typeof settings.workspaceName !== "string" || settings.workspaceName.length > 80) throw new Error("Profile and workspace names must be at most 80 characters.");
   if (!Number.isInteger(settings.forecastMonths) || settings.forecastMonths < 1 || settings.forecastMonths > 24) throw new Error("Forecast duration must be between 1 and 24 months.");
+  if (typeof settings.includeDebtForecast !== "boolean") throw new Error("Invalid debt forecast setting.");
   for (const items of [settings.expenseCategories, settings.incomeCategories, settings.paymentMethods]) {
     if (!Array.isArray(items) || items.length > 100 || !items.some((item) => item.active)) throw new Error("Keep at least one active option in each catalog (maximum 100).");
     if (items.some((item) => typeof item.id !== "string" || !item.id || item.id.length > 120 || typeof item.name !== "string" || !item.name.trim() || item.name.length > 80 || typeof item.active !== "boolean")) throw new Error("Catalog options need a name of at most 80 characters and a valid identifier.");

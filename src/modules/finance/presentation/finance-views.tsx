@@ -11,11 +11,14 @@ import { catalogName } from "./preferences-form";
 import { debtBalance, outstandingSchedule } from "../domain/debts";
 import { DebtCard } from "./debt-card";
 import { translateError } from "../../../shared/i18n/messages";
+import { accountBalance, netWorth } from "../domain/accounts";
+import { nextOccurrence } from "../domain/schedules";
+import { CsvTools } from "./csv-tools";
 
 export type Tab = "overview" | "transactions" | "planning" | "forecast" | "scenarios";
 interface ViewProps {
   state: FinanceState; month: string; edit: (editor: Editor) => void;
-  remove: (kind: "transaction" | "budget" | "goal" | "scenario" | "debt" | "repayment", id: string, debtId?: string) => void;
+  remove: (kind: "transaction" | "budget" | "goal" | "scenario" | "debt" | "repayment" | "account" | "transfer" | "schedule", id: string, debtId?: string) => void;
 }
 export function Transactions({ entries, currency, settings, edit, remove }: { entries: TransactionData[]; currency: string; settings: Settings; edit: ViewProps["edit"]; remove: ViewProps["remove"] }) {
   const { t, language } = useI18n();
@@ -27,7 +30,7 @@ export function Transactions({ entries, currency, settings, edit, remove }: { en
   </div>)}</div>;
 }
 
-export function Overview({ state, month, edit, remove, navigate, quickAdd }: ViewProps & { navigate: (tab: Tab) => void; quickAdd: (title: string, amount: number, category: string, paymentMethod: string) => void }) {
+export function Overview({ state, month, edit, remove, navigate, quickAdd, confirm }: ViewProps & { navigate: (tab: Tab) => void; quickAdd: (title: string, amount: number, category: string, paymentMethod: string) => void; confirm: (id: string, date: string) => void }) {
   const { t, language } = useI18n();
   const totals = monthSummary(state, month);
   const fmt = (value: number) => formatMoney(value, state.settings.currency, language);
@@ -41,12 +44,26 @@ export function Overview({ state, month, edit, remove, navigate, quickAdd }: Vie
   horizon.setDate(horizon.getDate() + 30);
   const horizonDate = localDate(horizon);
   const upcomingErrors: { name: string; error: string }[] = [];
-  const upcoming = state.debts.flatMap((debt) => {
+  const debtUpcoming = state.debts.flatMap((debt) => {
     try {
       if (debtBalance(debt, today) === 0) return [];
       return outstandingSchedule(debt, today).filter((payment) => payment.date <= horizonDate).map((payment) => ({ ...payment, debt }));
     } catch (reason) { upcomingErrors.push({ name: debt.name, error: reason instanceof Error ? reason.message : "Could not calculate the debt balance." }); return []; }
-  }).sort((a, b) => a.date.localeCompare(b.date));
+  }).map((payment, index) => ({ key: `debt-${payment.debt.id}-${index}`, date: payment.date, name: payment.debt.name, detail: t(payment.debt.direction === "owed" ? "I owe money" : "I lent money"), amount: payment.amount, estimated: payment.estimated, scheduleId: undefined as string | undefined }));
+  const scheduleUpcoming = state.schedules.flatMap((schedule) => {
+    const date = nextOccurrence(state, schedule, horizonDate);
+    return date ? [{ key: `schedule-${schedule.id}`, date, name: schedule.title, detail: t(schedule.type === "income" ? "Income" : "Expense"), amount: schedule.amount, estimated: false, scheduleId: schedule.id }] : [];
+  });
+  const goalUpcoming = state.goals.filter((goal) => goal.saved < goal.target && goal.date <= horizonDate).map((goal) => ({ key: `goal-${goal.id}`, date: goal.date, name: goal.name, detail: t("Savings goal"), amount: goal.target - goal.saved, estimated: false, scheduleId: undefined as string | undefined }));
+  const upcoming = [...debtUpcoming, ...scheduleUpcoming, ...goalUpcoming].sort((a, b) => a.date.localeCompare(b.date));
+  const [reportYear, reportMonth] = month.split("-").map(Number);
+  const report = Array.from({ length: 6 }, (_, index) => {
+    const date = new Date(reportYear, reportMonth - 1 - index, 1);
+    const key = localDate(date).slice(0, 7);
+    const end = key === today.slice(0, 7) ? today : localDate(new Date(date.getFullYear(), date.getMonth() + 1, 0));
+    try { return { key, ...monthSummary(state, key), worth: netWorth(state, end), error: "" }; }
+    catch (error) { return { key, ...monthSummary(state, key), worth: null, error: error instanceof Error ? error.message : "Could not calculate net worth." }; }
+  });
   return <>
     <section className="stats-grid" aria-label={t("Monthly summary")}>
       <article className="stat balance"><div className="stat-label">{t("Net cashflow")} <Wallet size={18} /></div><strong>{fmt(totals.net)}</strong><span>{t("Income minus expenses this month")}</span><div className="balance-decoration" /></article>
@@ -54,7 +71,8 @@ export function Overview({ state, month, edit, remove, navigate, quickAdd }: Vie
       <article className="stat"><div className="stat-label">{t("Money out")} <span className="mini-icon peach"><TrendingDown size={17} /></span></div><strong>{fmt(totals.expense)}</strong><span>{cap ? totals.expense > cap ? t("{p0} over your total budget", { p0: fmt(totals.expense - cap) }) : t("{p0} left in your total budget", { p0: fmt(cap - totals.expense) }) : t("Add budgets to stay on track")}</span></article>
       <article className="stat"><div className="stat-label">{t("Set aside")} <span className="mini-icon purple"><Target size={17} /></span></div><strong>{fmt(saved)}</strong><span>{t(activeGoals === 1 ? "{count} goal in progress" : "{count} goals in progress", { count: activeGoals })}</span></article>
     </section>
-    {(upcoming.length > 0 || upcomingErrors.length > 0) && <section className="card planning-card"><div className="section-heading"><div><h2>{t("Upcoming debt payments")}</h2><p>{t("Overdue and due in the next 30 days, based on recorded repayments.")}</p></div><button className="text-button" onClick={() => navigate("planning")}>{t("Manage")} <ArrowRight size={15} /></button></div>{upcomingErrors.map(({ name, error }, index) => <p role="alert" className="error" key={index}>{name}: {translateError(language, error)}</p>)}{upcoming.slice(0, 5).map((payment, index) => <div className="spread" key={`${payment.debt.id}-${index}`}><span>{payment.debt.name} &middot; {t(payment.debt.direction === "owed" ? "I owe money" : "I lent money")} &middot; {new Date(`${payment.date}T12:00:00`).toLocaleDateString(language)}{payment.date < today && <> &middot; {t("Overdue")}</>}{payment.estimated && <> &middot; {t("Estimated balloon")}</>}</span><strong className={payment.date < today ? "expense" : ""}>{fmt(payment.amount)}</strong></div>)}{upcoming.length > 5 && <p className="help">{t("Showing 5 of {count} payments", { count: upcoming.length })}</p>}</section>}
+    {(upcoming.length > 0 || upcomingErrors.length > 0) && <section className="card planning-card"><div className="section-heading"><div><h2>{t("Upcoming obligations")}</h2><p>{t("Overdue and due in the next 30 days. The earliest unconfirmed occurrence of each schedule is shown.")}</p></div><button className="text-button" onClick={() => navigate("planning")}>{t("Manage")} <ArrowRight size={15} /></button></div>{upcomingErrors.map(({ name, error }, index) => <p role="alert" className="error" key={index}>{name}: {translateError(language, error)}</p>)}{upcoming.map((item) => <div className="spread" key={item.key}><span>{item.name} &middot; {item.detail} &middot; {new Date(`${item.date}T12:00:00`).toLocaleDateString(language)}{item.date < today && <> &middot; {t("Overdue")}</>}{item.estimated && <> &middot; {t("Estimated balloon")}</>}</span><span><strong>{fmt(item.amount)}</strong>{item.scheduleId && item.date <= today && <button className="text-button" onClick={() => { if (item.scheduleId) confirm(item.scheduleId, item.date); }}>{t("Confirm occurrence")}</button>}</span></div>)}</section>}
+    <section className="card planning-card"><h2>{t("Income, spending and net worth")}</h2><p>{t("Net worth includes opened accounts and debts or loans, but not unassigned transactions. Month-end values use recorded data; the current month uses today.")}</p><div className="table-scroll" tabIndex={0} role="region" aria-label={t("Income, spending and net worth")}><table><thead><tr><th scope="col">{t("Month")}</th><th scope="col">{t("Income")}</th><th scope="col">{t("Expenses")}</th><th scope="col">{t("Net worth")}</th></tr></thead><tbody>{report.map((row) => <tr key={row.key}><th scope="row">{new Date(`${row.key}-01T12:00:00`).toLocaleDateString(language, { month: "short", year: "numeric" })}</th><td>{fmt(row.income)}</td><td>{fmt(row.expense)}</td><td>{row.error ? <span role="alert" className="error">{translateError(language, row.error)}</span> : fmt(row.worth!)}</td></tr>)}</tbody></table></div></section>
     {state.settings.quickActions.length > 0 && <section className="card quick-card"><div><h3>{t("The little, everyday things")}</h3><p>{t("Quickly record a familiar expense. Edit it any time.")}</p></div><div className="quick-actions">
       {state.settings.quickActions.map(({ id, title, amount, category, paymentMethod }) => {
         const Icon = id === "coffee" ? Coffee : id === "groceries" ? ShoppingBasket : id === "commute" ? TrainFront : Plus;
@@ -81,16 +99,16 @@ export function Overview({ state, month, edit, remove, navigate, quickAdd }: Vie
   </>;
 }
 
-export function TransactionView({ state, month, edit, remove }: ViewProps) {
+export function TransactionView({ state, month, edit, remove, onImport }: ViewProps & { onImport: (entries: TransactionData[]) => Promise<void> }) {
   const { t } = useI18n();
   const [search, setSearch] = useState("");
   const [type, setType] = useState("all");
   const filtered = search.trim() !== "" || type !== "all";
   const entries = [...state.transactions].filter((entry) => entry.date.startsWith(month) && (type === "all" || entry.type === type) && `${entry.title} ${entry.category} ${catalogName(entry.type === "expense" ? state.settings.expenseCategories : state.settings.incomeCategories, entry.category, t)} ${entry.notes}`.toLowerCase().includes(search.trim().toLowerCase())).sort((a, b) => b.date.localeCompare(a.date));
   function clearFilters() { setSearch(""); setType("all"); }
-  return <section className="card"><div className="transaction-filters"><label className="search-field"><span className="sr-only">{t("Search transactions")}</span><input type="search" placeholder={t("Search descriptions, categories, notes...")} value={search} onChange={(e) => setSearch(e.target.value)} /></label><label><span className="sr-only">{t("Transaction type")}</span><select value={type} onChange={(e) => setType(e.target.value)}><option value="all">{t("All transactions")}</option><option value="expense">{t("Expenses")}</option><option value="income">{t("Income")}</option></select></label><span className="muted" role="status">{t(entries.length === 1 ? "{count} record" : "{count} records", { count: entries.length })}</span>{filtered && <button className="text-button" onClick={clearFilters}>{t("Clear filters")}</button>}</div>
+  return <><CsvTools state={state} onImport={onImport} /><section className="card"><div className="transaction-filters"><label className="search-field"><span className="sr-only">{t("Search transactions")}</span><input type="search" placeholder={t("Search descriptions, categories, notes...")} value={search} onChange={(e) => setSearch(e.target.value)} /></label><label><span className="sr-only">{t("Transaction type")}</span><select value={type} onChange={(e) => setType(e.target.value)}><option value="all">{t("All transactions")}</option><option value="expense">{t("Expenses")}</option><option value="income">{t("Income")}</option></select></label><span className="muted" role="status">{t(entries.length === 1 ? "{count} record" : "{count} records", { count: entries.length })}</span>{filtered && <button className="text-button" onClick={clearFilters}>{t("Clear filters")}</button>}</div>
     {entries.length ? <Transactions entries={entries} currency={state.settings.currency} settings={state.settings} edit={edit} remove={remove} /> : <Empty title={t(filtered ? "No matching transactions" : "Nothing here yet")} description={t(filtered ? "Try a different search or clear your filters." : "Try another month or search, or record a transaction.")} action={filtered ? <button className="button secondary" onClick={clearFilters}>{t("Clear filters")}</button> : <button className="button primary" onClick={() => edit({ kind: "transaction" })}>{t("Add transaction")}</button>} />}
-  </section>;
+  </section></>;
 }
 
 export function PlanningView({ state, month, edit, remove }: ViewProps) {
@@ -99,6 +117,16 @@ export function PlanningView({ state, month, edit, remove }: ViewProps) {
   const fmt = (value: number) => formatMoney(value, state.settings.currency, language);
   const needsSpend = state.settings.needsCategories.reduce((a, c) => a + (totals.byCategory[c] ?? 0), 0);
   return <>
+    <div className="section-heading"><div><h2>{t("Accounts")}</h2><p>{t("Balances include assigned transactions and transfers through today.")}</p></div><div className="wrap-actions"><button className="button secondary" onClick={() => edit({ kind: "account" })}><Plus size={16} /> {t("Add account")}</button><button className="button secondary" disabled={state.accounts.length < 2} onClick={() => edit({ kind: "transfer" })}>{t("Transfer")}</button></div></div>
+    {state.accounts.length > 0 && <div className="planning-grid">{state.accounts.map((account) => {
+      let balance: number | null = null, balanceError = "";
+      try { balance = accountBalance(state, account, localDate()); }
+      catch (error) { balanceError = error instanceof Error ? error.message : "Could not calculate the account balance."; }
+      return <article className="card planning-card" key={account.id}><div className="spread"><h3>{account.name}</h3><div className="inline-actions"><button className="icon-button" aria-label={t("Edit {p0}", { p0: account.name })} onClick={() => edit({ kind: "account", data: account })}><Pencil size={15} /></button><button className="icon-button" aria-label={t("Delete {p0}", { p0: account.name })} onClick={() => remove("account", account.id)}><Trash2 size={15} /></button></div></div><p className="large-number">{balanceError ? <span role="alert" className="error">{translateError(language, balanceError)}</span> : balance === null ? t("Not open yet") : fmt(balance)}</p></article>;
+    })}</div>}
+    {state.transfers.length > 0 && <section className="card planning-card"><h3>{t("Transfers")}</h3>{[...state.transfers].sort((a, b) => b.date.localeCompare(a.date)).map((transfer) => <div className="spread" key={transfer.id}><span>{state.accounts.find((account) => account.id === transfer.fromAccountId)?.name} &rarr; {state.accounts.find((account) => account.id === transfer.toAccountId)?.name} &middot; {new Date(`${transfer.date}T12:00:00`).toLocaleDateString(language)} &middot; {fmt(transfer.amount)}</span><div className="inline-actions"><button className="icon-button" aria-label={t("Edit transfer on {p0}", { p0: transfer.date })} onClick={() => edit({ kind: "transfer", data: transfer })}><Pencil size={15} /></button><button className="icon-button" aria-label={t("Delete transfer on {p0}", { p0: transfer.date })} onClick={() => remove("transfer", transfer.id)}><Trash2 size={15} /></button></div></div>)}</section>}
+    <div className="section-heading"><div><h2>{t("Recurring schedules")}</h2><p>{t("Confirm each due occurrence before it becomes a transaction.")}</p></div><button className="button secondary" onClick={() => edit({ kind: "schedule" })}><Plus size={16} /> {t("Add schedule")}</button></div>
+    {state.schedules.length > 0 && <div className="planning-grid">{state.schedules.map((schedule) => <article className="card planning-card" key={schedule.id}><div className="spread"><h3>{schedule.title}</h3><div className="inline-actions"><button className="icon-button" aria-label={t("Edit {p0}", { p0: schedule.title })} onClick={() => edit({ kind: "schedule", data: schedule })}><Pencil size={15} /></button><button className="icon-button" aria-label={t("Delete {p0}", { p0: schedule.title })} onClick={() => remove("schedule", schedule.id)}><Trash2 size={15} /></button></div></div><p>{fmt(schedule.amount)} &middot; {t(schedule.active ? "Active" : "Paused")}</p></article>)}</div>}
     <div className="section-heading"><div><h2>{t("Monthly budgets")}</h2><p>{t("Not restrictions. A little direction.")}</p></div><button className="button secondary" onClick={() => edit({ kind: "budget" })}><Plus size={16} /> {t("Add budget")}</button></div>
     {state.budgets.length ? <div className="planning-grid">{state.budgets.map((b) => {
       const spent = totals.byCategory[b.category] ?? 0;
@@ -115,20 +143,23 @@ export function PlanningView({ state, month, edit, remove }: ViewProps) {
 
 export function ForecastView({ state, month }: Pick<ViewProps, "state" | "month">) {
   const { t, language } = useI18n();
-  const rows = forecast(state, month).map((row) => ({
-    ...row, label: new Date(`${row.month}-01T12:00:00`).toLocaleDateString(language, { month: "short", year: "2-digit" }),
-  }));
+  let rows: ReturnType<typeof forecast>;
+  try { rows = forecast(state, month); }
+  catch (error) { return <p role="alert" className="error">{translateError(language, error instanceof Error ? error.message : "Could not calculate the forecast.")}</p>; }
+  const labeledRows = rows.map((row) => ({ ...row, label: new Date(`${row.month}-01T12:00:00`).toLocaleDateString(language, { month: "short", year: "2-digit" }) }));
   const max = Math.max(...rows.map((r) => Math.max(r.income, r.expense)), 1);
   return <><section className="card planning-card"><div className="section-heading"><div><h2>{t("A look ahead")}</h2><p>{t("{count} months, a little more perspective.", { count: state.settings.forecastMonths })}</p></div><span className="subtle-badge">{t("Estimate, not a promise")}</span></div>
-    <div className="forecast-chart" role="img" aria-label={t("Projected monthly income and expenses. Exact values are in the table below.")}>{rows.map((r) => <div className="chart-column" key={r.month}><div className="bar-pair"><div className="chart-bar income-bar" style={{ height: `${r.income / max * 100}%` }} /><div className="chart-bar expense-bar" style={{ height: `${r.expense / max * 100}%` }} /></div><span>{r.label}</span></div>)}</div>
+    <div className="forecast-chart" role="img" aria-label={t("Projected monthly income and expenses. Exact values are in the table below.")}>{labeledRows.map((r) => <div className="chart-column" key={r.month}><div className="bar-pair"><div className="chart-bar income-bar" style={{ height: `${r.income / max * 100}%` }} /><div className="chart-bar expense-bar" style={{ height: `${r.expense / max * 100}%` }} /></div><span>{r.label}</span></div>)}</div>
     <div className="chart-legend"><span><i className="dot color-0" />{t("Income")}</span><span><i className="dot color-1" />{t("Expenses")}</span></div>
-    <div className="table-scroll" tabIndex={0} role="region" aria-label={t("Monthly forecast details")}><table><caption className="sr-only">{t("Monthly forecast details")}</caption><thead><tr><th scope="col">{t("Month")}</th><th scope="col">{t("Income")}</th><th scope="col">{t("Expenses")}</th><th scope="col">{t("Net")}</th><th scope="col">{t("Projected balance")}</th></tr></thead><tbody>{rows.map((r) => <tr key={r.month}><th scope="row">{r.label}</th><td>{formatMoney(r.income, state.settings.currency, language)}</td><td>{formatMoney(r.expense, state.settings.currency, language)}</td><td className={r.net < 0 ? "expense" : "income"}>{formatMoney(r.net, state.settings.currency, language)}</td><td>{formatMoney(r.balance, state.settings.currency, language)}</td></tr>)}</tbody></table></div>
-  </section><aside className="info-panel"><TrendingUp size={20} /><div><strong>{t("Here's what goes into this estimate")}</strong><p>{t("Forecasts use your expected income, or recorded monthly income when zero. Expenses use your custom estimate when set; otherwise the greater of monthly spending and recurring expenses. Your opening balance is added to recorded balance. Projections start after the selected month and never create transactions.")}</p></div></aside></>;
+    <div className="table-scroll" tabIndex={0} role="region" aria-label={t("Monthly forecast details")}><table><caption className="sr-only">{t("Monthly forecast details")}</caption><thead><tr><th scope="col">{t("Month")}</th><th scope="col">{t("Income")}</th><th scope="col">{t("Expenses")}</th><th scope="col">{t("Net")}</th><th scope="col">{t("Projected balance")}</th></tr></thead><tbody>{labeledRows.map((r) => <tr key={r.month}><th scope="row">{r.label}</th><td>{formatMoney(r.income, state.settings.currency, language)}</td><td>{formatMoney(r.expense, state.settings.currency, language)}</td><td className={r.net < 0 ? "expense" : "income"}>{formatMoney(r.net, state.settings.currency, language)}</td><td>{formatMoney(r.balance, state.settings.currency, language)}</td></tr>)}</tbody></table></div>
+  </section><aside className="info-panel"><TrendingUp size={20} /><div><strong>{t("Here's what goes into this estimate")}</strong><p>{t("Forecasts use your expected income, or recorded monthly income when zero. Expenses use your custom estimate when set; otherwise the greater of monthly spending and recurring expenses. Your opening balance is added to recorded balance. Projections start after the selected month and never create transactions.")}</p>{state.settings.includeDebtForecast && <p>{t("Scheduled debt and loan payments are included. Manually entered baselines or unlinked repayments may already include these amounts.")}</p>}</div></aside></>;
 }
 
 export function ScenariosView({ state, month, edit, remove }: ViewProps) {
   const { t, language } = useI18n();
-  const baseline = forecast(state, month)[0];
+  let baseline: ReturnType<typeof forecast>[number];
+  try { baseline = forecast(state, month)[0]; }
+  catch (error) { return <p role="alert" className="error">{translateError(language, error instanceof Error ? error.message : "Could not calculate the forecast.")}</p>; }
   return <><aside className="info-panel"><TrendingUp size={20} /><div><strong>{t("A safe place to ask “what if?”")}</strong><p>{t("Try a raise, a spending cut, or a new routine. Your actual records stay exactly as they are.")}</p></div><button className="button secondary" onClick={() => edit({ kind: "scenario" })}><Plus size={16} /> {t("New scenario")}</button></aside>
     {state.scenarios.length ? <div className="planning-grid">{state.scenarios.map((s) => {
       const projected = forecast(state, month, s)[0];

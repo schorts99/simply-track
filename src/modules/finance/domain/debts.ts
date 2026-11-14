@@ -219,6 +219,30 @@ export function outstandingSchedule(debt: DebtData, asOf: string): (ScheduledPay
   return result.balloon ? [...result.schedule, { date: lastDueDate(debt), amount: result.balloon, estimated: true }] : result.schedule;
 }
 
+export function forecastDebtPayments(debt: DebtData, asOf: string): ScheduledPayment[] {
+  const actual = debt.payments.filter((payment) => payment.date <= asOf);
+  const future = debt.payments.filter((payment) => payment.date > asOf);
+  const schedule = unpaidSchedule(debt, asOf);
+  let credit = future.reduce((sum, payment) => sum + payment.amount, 0);
+  for (const payment of schedule) {
+    const applied = Math.min(payment.amount, credit);
+    payment.amount -= applied;
+    credit -= applied;
+  }
+  const events = [
+    ...future.map((payment) => ({ date: payment.date, amount: payment.amount })),
+    ...schedule.filter((payment) => payment.amount > 0).map((payment) => ({ date: payment.date < asOf ? asOf : payment.date, amount: payment.amount })),
+  ];
+  const eventSet = new Set(events);
+  const result: ScheduledPayment[] = [];
+  const end = [asOf, lastDueDate(debt), ...future.map((payment) => payment.date)].sort().at(-1)!;
+  const balance = debtBalance(debt, end, [...actual, ...events], true, (payment, amount) => {
+    if (eventSet.has(payment) && amount) result.push({ date: payment.date, amount });
+  });
+  if (balance) result.push({ date: end, amount: balance });
+  return result;
+}
+
 export function validateDebt(debt: DebtData, validateId: (id: string) => void, validMoney: (amount: number) => void, validDate: (date: string) => void) {
   validateId(debt.id);
   if (typeof debt.name !== "string" || !debt.name.trim() || debt.name.length > 120) throw new Error("Debt or loan name is required (maximum 120 characters).");

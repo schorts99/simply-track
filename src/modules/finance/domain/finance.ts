@@ -3,7 +3,9 @@ import { DomainEvent } from "@schorts/shared-kernel/domain-events";
 import { Entity } from "@schorts/shared-kernel/entities";
 import { UUIDValue } from "@schorts/shared-kernel/value-objects";
 import { defaultSettings, restoreSettings, validateSettings, type Settings } from "./settings";
-import { validateDebt, type DebtData, type DebtPayment } from "./debts";
+import { forecastDebtPayments, validateDebt, type DebtData, type DebtPayment } from "./debts";
+import type { AccountData, TransferData } from "./accounts";
+import { isOccurrence, type ScheduleData } from "./schedules";
 export { expenseCategories, incomeCategories, defaultSettings } from "./settings";
 export type { Settings } from "./settings";
 
@@ -18,6 +20,9 @@ export interface TransactionData {
   paymentMethod: string;
   notes: string;
   recurring: boolean;
+  accountId?: string;
+  scheduleId?: string;
+  occurrenceDate?: string;
 }
 export interface BudgetData { id: string; category: string; limit: number; }
 export interface GoalData { id: string; name: string; target: number; saved: number; date: string; }
@@ -31,11 +36,22 @@ export interface FinanceState {
   goals: GoalData[];
   scenarios: ScenarioData[];
   debts: DebtData[];
+  accounts: AccountData[];
+  transfers: TransferData[];
+  schedules: ScheduleData[];
   settings: Settings;
 }
 export type Command =
   | { type: "transaction.save"; data: TransactionData }
   | { type: "transaction.delete"; id: string }
+  | { type: "transaction.import"; data: TransactionData[] }
+  | { type: "account.save"; data: AccountData }
+  | { type: "account.delete"; id: string }
+  | { type: "transfer.save"; data: TransferData }
+  | { type: "transfer.delete"; id: string }
+  | { type: "schedule.save"; data: ScheduleData }
+  | { type: "schedule.delete"; id: string }
+  | { type: "schedule.confirm"; id: string; date: string; transactionId: string }
   | { type: "budget.save"; data: BudgetData }
   | { type: "budget.delete"; id: string }
   | { type: "goal.save"; data: GoalData }
@@ -96,7 +112,7 @@ export class Transaction extends Entity<FinanceId, TransactionData> {
 export function emptyState(): FinanceState {
   return {
     id: crypto.randomUUID(), revision: crypto.randomUUID(), version: 0,
-    transactions: [], budgets: [], goals: [], scenarios: [], debts: [],
+    transactions: [], budgets: [], goals: [], scenarios: [], debts: [], accounts: [], transfers: [], schedules: [],
     settings: defaultSettings(),
   };
 }
@@ -107,6 +123,9 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
     super(new FinanceId(state.id), state.version);
     this.state = structuredClone(state);
     if (this.state.debts === undefined) this.state.debts = [];
+    if (this.state.accounts === undefined) this.state.accounts = [];
+    if (this.state.transfers === undefined) this.state.transfers = [];
+    if (this.state.schedules === undefined) this.state.schedules = [];
     this.state.settings = restoreSettings(state.settings);
     this.validateInvariants();
   }
@@ -116,7 +135,44 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
     validateId(s.revision);
     if (!Number.isSafeInteger(s.version) || s.version < 0) throw new Error("Invalid book version.");
     validateSettings(s.settings);
-    s.transactions.forEach((t) => new Transaction(t, s.settings));
+    s.accounts.forEach((account) => { validateId(account.id); text(account.name, "Account name"); validMoney(account.openingBalance, true); validDate(account.openingDate); });
+    if (new Set(s.accounts.map((account) => account.name.trim().toLocaleLowerCase())).size !== s.accounts.length) throw new Error("Account names must be unique.");
+    s.transactions.forEach((t) => {
+      new Transaction(t, s.settings);
+      if (t.accountId !== undefined) {
+        const account = s.accounts.find((item) => item.id === t.accountId);
+        if (!account || t.date < account.openingDate) throw new Error("Choose an existing account opened on or before the transaction date.");
+      }
+    });
+    s.transfers.forEach((transfer) => {
+      validateId(transfer.id); validMoney(transfer.amount); validDate(transfer.date);
+      if (!transfer.amount) throw new Error("Transfer amount must be greater than zero.");
+      const from = s.accounts.find((account) => account.id === transfer.fromAccountId);
+      const to = s.accounts.find((account) => account.id === transfer.toAccountId);
+      if (!from || !to || from.id === to.id || transfer.date < from.openingDate || transfer.date < to.openingDate) throw new Error("Choose two different accounts opened on or before the transfer date.");
+      if (typeof transfer.notes !== "string" || transfer.notes.length > 1000) throw new Error("Invalid transfer details.");
+    });
+    s.schedules.forEach((schedule) => {
+      validateId(schedule.id); text(schedule.title, "Title"); validMoney(schedule.amount); validDate(schedule.firstDate);
+      if (!schedule.amount) throw new Error("The amount must be greater than zero.");
+      if (schedule.endDate !== undefined) { validDate(schedule.endDate); if (schedule.endDate < schedule.firstDate) throw new Error("The end date cannot be before the first date."); }
+      if (!["weekly", "biweekly", "monthly", "quarterly", "yearly"].includes(schedule.interval) || typeof schedule.active !== "boolean") throw new Error("Invalid recurring schedule.");
+      const categories = schedule.type === "expense" ? s.settings.expenseCategories : schedule.type === "income" ? s.settings.incomeCategories : [];
+      if (!categories.some((item) => item.id === schedule.category) || !s.settings.paymentMethods.some((item) => item.id === schedule.paymentMethod)) throw new Error("Choose a valid category and payment method for the schedule.");
+      if (schedule.accountId !== undefined) {
+        const account = s.accounts.find((item) => item.id === schedule.accountId);
+        if (!account || schedule.firstDate < account.openingDate) throw new Error("Choose an existing account opened on or before the first date.");
+      }
+    });
+    const occurrences = new Set<string>();
+    for (const transaction of s.transactions) {
+      if (transaction.scheduleId === undefined && transaction.occurrenceDate === undefined) continue;
+      if (!transaction.scheduleId || !transaction.occurrenceDate || !s.schedules.some((schedule) => schedule.id === transaction.scheduleId)) throw new Error("Invalid recurring transaction reference.");
+      validDate(transaction.occurrenceDate);
+      const key = `${transaction.scheduleId}:${transaction.occurrenceDate}`;
+      if (occurrences.has(key)) throw new Error("This occurrence has already been recorded.");
+      occurrences.add(key);
+    }
     s.budgets.forEach((b) => {
       validateId(b.id);
       if (!s.settings.expenseCategories.some((item) => item.id === b.category)) throw new Error("Choose an expense category.");
@@ -143,7 +199,7 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
       if (linkedTransactions.has(transaction.id)) throw new Error("A transaction can only be linked to one repayment.");
       linkedTransactions.add(transaction.id);
     }
-    for (const collection of [s.transactions, s.budgets, s.goals, s.scenarios, s.debts]) {
+    for (const collection of [s.transactions, s.budgets, s.goals, s.scenarios, s.debts, s.accounts, s.transfers, s.schedules]) {
       if (new Set(collection.map((v) => v.id)).size !== collection.length) throw new Error("Duplicate record identifiers.");
     }
   }
@@ -159,12 +215,52 @@ export class FinanceBook extends AggregateRoot<FinanceId> {
       case "transaction.save": {
         const data = command.data;
         const existing = this.state.transactions.find((item) => item.id === data.id);
+        if (data.scheduleId !== existing?.scheduleId || data.occurrenceDate !== existing?.occurrenceDate) throw new Error("Recurring occurrence references cannot be changed.");
         const categories = data.type === "expense" ? this.state.settings.expenseCategories : this.state.settings.incomeCategories;
         if (!categories.some((item) => item.id === data.category && (item.active || (existing?.category === data.category && existing.type === data.type)))) throw new Error("Choose an active category.");
         if (!this.state.settings.paymentMethods.some((item) => item.id === data.paymentMethod && (item.active || existing?.paymentMethod === data.paymentMethod))) throw new Error("Choose an active payment method.");
         this.state.transactions = upsert(this.state.transactions, new Transaction(data, this.state.settings).toPrimitives()); break;
       }
       case "transaction.delete": this.state.transactions = remove(this.state.transactions, command.id); break;
+      case "transaction.import": {
+        if (!command.data.length) throw new Error("Select at least one transaction to import.");
+        const ids = new Set(this.state.transactions.map((item) => item.id));
+        for (const data of command.data) {
+          if (ids.has(data.id)) throw new Error("Duplicate record identifiers.");
+          ids.add(data.id);
+          const categories = data.type === "income" ? this.state.settings.incomeCategories : this.state.settings.expenseCategories;
+          if (!categories.some((item) => item.id === data.category && item.active) || !this.state.settings.paymentMethods.some((item) => item.id === data.paymentMethod && item.active)) throw new Error("CSV rows must use active categories and payment methods.");
+          if (data.scheduleId !== undefined || data.occurrenceDate !== undefined) throw new Error("CSV transactions cannot contain schedule references.");
+          this.state.transactions.push(new Transaction(data, this.state.settings).toPrimitives());
+        }
+        break;
+      }
+      case "account.save": this.state.accounts = upsert(this.state.accounts, { ...command.data, name: command.data.name.trim() }); break;
+      case "account.delete":
+        if (this.state.transactions.some((item) => item.accountId === command.id) || this.state.transfers.some((item) => item.fromAccountId === command.id || item.toAccountId === command.id) || this.state.schedules.some((item) => item.accountId === command.id)) throw new Error("Move or remove this account's transactions, transfers and schedules before deleting it.");
+        this.state.accounts = remove(this.state.accounts, command.id); break;
+      case "transfer.save": this.state.transfers = upsert(this.state.transfers, command.data); break;
+      case "transfer.delete": this.state.transfers = remove(this.state.transfers, command.id); break;
+      case "schedule.save": this.state.schedules = upsert(this.state.schedules, { ...command.data, title: command.data.title.trim() }); break;
+      case "schedule.delete":
+        this.state.schedules = remove(this.state.schedules, command.id);
+        this.state.transactions = this.state.transactions.map((transaction) => {
+          if (transaction.scheduleId !== command.id) return transaction;
+          const record = { ...transaction };
+          delete record.scheduleId; delete record.occurrenceDate;
+          return record;
+        }); break;
+      case "schedule.confirm": {
+        const schedule = this.state.schedules.find((item) => item.id === command.id);
+        validDate(command.date);
+        if (!schedule || !schedule.active || !isOccurrence(schedule, command.date) || command.date > localDate()) throw new Error("Choose an active occurrence that is due.");
+        if (this.state.transactions.some((item) => item.scheduleId === schedule.id && item.occurrenceDate === command.date)) throw new Error("This occurrence has already been recorded.");
+        if (this.state.transactions.some((item) => item.id === command.transactionId)) throw new Error("Duplicate record identifiers.");
+        const categories = schedule.type === "expense" ? this.state.settings.expenseCategories : this.state.settings.incomeCategories;
+        if (!categories.some((item) => item.id === schedule.category && item.active) || !this.state.settings.paymentMethods.some((item) => item.id === schedule.paymentMethod && item.active)) throw new Error("Choose an active category and payment method for the schedule.");
+        const data: TransactionData = { id: command.transactionId, title: schedule.title, amount: schedule.amount, type: schedule.type, category: schedule.category, paymentMethod: schedule.paymentMethod, date: command.date, notes: "", recurring: false, accountId: schedule.accountId, scheduleId: schedule.id, occurrenceDate: command.date };
+        this.state.transactions = upsert(this.state.transactions, new Transaction(data, this.state.settings).toPrimitives()); break;
+      }
       case "budget.save":
         if (!this.state.settings.expenseCategories.some((item) => item.id === command.data.category && (item.active || this.state.budgets.some((budget) => budget.id === command.data.id && budget.category === item.id)))) throw new Error("Choose an active category.");
         this.state.budgets = upsert(this.state.budgets, command.data); break;
@@ -208,14 +304,24 @@ export function monthSummary(state: FinanceState, month: string) {
 }
 
 export function forecast(state: FinanceState, month: string, scenario?: ScenarioData) {
-  const current = monthSummary(state, month);
+  const linked = new Set(state.debts.flatMap((debt) => debt.payments.flatMap((payment) => payment.transactionId ? [payment.transactionId] : [])));
+  const baselineState = state.settings.includeDebtForecast ? { ...state, transactions: state.transactions.filter((item) => !linked.has(item.id)) } : state;
+  const current = monthSummary(baselineState, month);
   const income = Math.max(0, (state.settings.incomeBaseline || current.income) + (scenario?.incomeChange ?? 0));
-  const recurringExpense = state.transactions.filter((t) => t.type === "expense" && t.recurring && t.date.slice(0, 7) <= month).reduce((a, t) => a + t.amount, 0);
+  const recurringExpense = baselineState.transactions.filter((t) => t.type === "expense" && t.recurring && t.date.slice(0, 7) <= month).reduce((a, t) => a + t.amount, 0);
   const expense = Math.round((state.settings.expenseBaseline ?? Math.max(current.expense, recurringExpense)) * (1 + (scenario?.expensePercent ?? 0) / 100));
   const balance = state.settings.openingBalance + state.transactions.filter((t) => t.date.slice(0, 7) <= month).reduce((a, t) => a + (t.type === "income" ? t.amount : -t.amount), 0);
   const [year, m] = month.split("-").map(Number);
-  return Array.from({ length: state.settings.forecastMonths }, (_, i) => ({
-    month: localDate(new Date(year, m + i, 1)).slice(0, 7),
-    income, expense, net: income - expense, balance: balance + (income - expense) * (i + 1),
-  }));
+  const asOf = localDate(new Date(year, m, 0));
+  const projected = state.settings.includeDebtForecast ? state.debts.flatMap((debt) => forecastDebtPayments(debt, asOf).map((payment) => ({ ...payment, direction: debt.direction }))) : [];
+  let running = balance;
+  return Array.from({ length: state.settings.forecastMonths }, (_, i) => {
+    const target = localDate(new Date(year, m + i, 1)).slice(0, 7);
+    const debts = projected.filter((payment) => payment.date.slice(0, 7) === target || (i === 0 && payment.date <= asOf));
+    const rowIncome = income + debts.filter((payment) => payment.direction === "lent").reduce((sum, payment) => sum + payment.amount, 0);
+    const rowExpense = expense + debts.filter((payment) => payment.direction === "owed").reduce((sum, payment) => sum + payment.amount, 0);
+    const net = rowIncome - rowExpense;
+    running += net;
+    return { month: target, income: rowIncome, expense: rowExpense, net, balance: running };
+  });
 }

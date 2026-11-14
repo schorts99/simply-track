@@ -1,5 +1,46 @@
 import { expect, test } from "@playwright/test";
 
+test("accounts, schedules and CSV imports survive reloads", async ({ page }, testInfo) => {
+  await page.clock.setFixedTime(new Date("2026-03-01T12:00:00"));
+  await page.goto("/");
+  await page.getByLabel("Vault password", { exact: true }).fill("a safe test password 123");
+  await page.getByLabel("Confirm password", { exact: true }).fill("a safe test password 123");
+  await page.getByRole("button", { name: "Create my private vault" }).click();
+  const nav = page.getByRole("navigation", { name: testInfo.project.name === "mobile" ? "Mobile navigation" : "Main navigation" });
+  const dialog = page.getByRole("dialog");
+  await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Plan" : "Budgets & goals", exact: true }).click();
+  await page.getByRole("button", { name: "Add account" }).click();
+  await dialog.getByLabel("Account name").fill("Checking");
+  await dialog.getByLabel("Account opening balance").fill("500");
+  await dialog.getByLabel("Account opening date").fill("2026-01-01");
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await page.getByRole("button", { name: "Add schedule" }).click();
+  await dialog.getByLabel("Description").fill("Rent");
+  await dialog.getByLabel("Amount").fill("100");
+  await dialog.getByLabel("First due date").fill("2026-02-28");
+  await dialog.getByLabel("Account (optional)").selectOption({ label: "Checking" });
+  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Home" : "Overview", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm occurrence" }).click();
+  await expect(page.getByRole("heading", { name: "Income, spending and net worth" })).toBeVisible();
+  await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Plan" : "Budgets & goals", exact: true }).click();
+  await expect(page.locator("article").filter({ has: page.getByRole("heading", { name: "Checking" }) })).toContainText("$400.00");
+  await page.reload();
+  await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Activity" : "Transactions", exact: true }).click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export CSV" }).click();
+  const csv = await download;
+  await page.getByLabel("Preview CSV import").setInputFiles((await csv.path())!);
+  await expect(page.getByRole("checkbox", { name: /Possible duplicate/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Import selected" })).toBeDisabled();
+  await page.getByRole("checkbox", { name: /Possible duplicate/ }).check();
+  await page.getByRole("button", { name: "Import selected" }).click();
+  await expect(page.getByRole("button", { name: "Import selected" })).toHaveCount(0);
+  await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Plan" : "Budgets & goals", exact: true }).click();
+  await expect(page.locator("article").filter({ has: page.getByRole("heading", { name: "Checking" }) })).toContainText("$300.00");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 test("debts and loans persist with schedules and separate repayments", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByLabel("Vault password", { exact: true }).fill("a safe test password 123");
@@ -77,7 +118,7 @@ test("custom loans, linked transactions and payoff estimates work together", asy
   await card.getByRole("button", { name: "Calculate estimate" }).click();
   await expect(card).toContainText("Estimated savings:");
   await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Home" : "Overview", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Upcoming debt payments" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Upcoming obligations" })).toBeVisible();
   await page.reload();
   await nav.getByRole("button", { name: testInfo.project.name === "mobile" ? "Plan" : "Budgets & goals", exact: true }).click();
   await card.getByText("Repayment history").click();

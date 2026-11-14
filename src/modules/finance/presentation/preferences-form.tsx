@@ -74,6 +74,8 @@ export function PreferencesForm({ settings, onSave, busy }: { settings: Settings
       <p className="help">{t("Leave blank to estimate expenses from recorded spending and recurring items. Zero explicitly projects no expenses.")}</p>
       <label>{t("Opening balance")}<input name="openingBalance" type="number" step="0.01" required defaultValue={amountInput(draft.openingBalance)} /></label>
       <label>{t("Forecast months")}<input type="number" min="1" max="24" step="1" required value={draft.forecastMonths} onChange={(event) => patch("forecastMonths", Number(event.target.value))} /></label>
+      <label className="checkbox"><input type="checkbox" checked={draft.includeDebtForecast} onChange={(event) => patch("includeDebtForecast", event.target.checked)} /> {t("Include scheduled debt and loan payments")}</label>
+      <p className="help">{t("Recorded linked repayments are excluded from inferred baselines. Manually entered baselines may already include debt payments; adjust them to avoid double counting.")}</p>
     </details>
     {catalog("expenseCategories", "Expense categories")}
     {catalog("incomeCategories", "Income categories")}
